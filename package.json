@@ -1,0 +1,16 @@
+{
+  "name": "crab-breakthrough-online",
+  "version": "1.0.0",
+  "description": "Crab Breakthrough - Online multiplayer Atari 8-bit style ocean game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

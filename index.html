@@ -1,0 +1,1875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crab Breakthrough</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  #game-wrapper {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #hud {
+    display: flex;
+    justify-content: space-between;
+    width: 640px;
+    padding: 8px 4px;
+    color: #fff;
+    font-size: 11px;
+    text-shadow: 2px 2px #000;
+  }
+
+  #hud span { display: inline-block; }
+
+  #game-canvas {
+    border: 4px solid #1a1a5e;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: none;
+  }
+
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0,0,20,0.85);
+    color: #fff;
+    text-align: center;
+    z-index: 10;
+  }
+
+  #overlay.hidden { display: none; }
+
+  #overlay h1 {
+    font-size: 28px;
+    color: #ff6644;
+    text-shadow: 3px 3px #000;
+    margin-bottom: 20px;
+    letter-spacing: 2px;
+  }
+
+  #overlay h2 {
+    font-size: 16px;
+    color: #44ddff;
+    text-shadow: 2px 2px #000;
+    margin-bottom: 16px;
+  }
+
+  #overlay p {
+    font-size: 10px;
+    color: #aaa;
+    line-height: 2;
+    margin-bottom: 6px;
+  }
+
+  #overlay .blink {
+    font-size: 12px;
+    color: #ffcc00;
+    margin-top: 24px;
+    animation: blink 1s steps(2) infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .life-icon {
+    color: #ff4444;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<div id="game-wrapper">
+  <div id="hud">
+    <span>SCORE: <span id="score-display">0</span></span>
+    <span>LEVEL: <span id="level-display">1</span></span>
+    <span>CRUMBS: <span id="crumbs-display">0/0</span></span>
+    <span id="lives-display"></span>
+  </div>
+  <canvas id="game-canvas" width="640" height="480"></canvas>
+  <div id="overlay">
+    <h1>CRAB BREAKTHROUGH</h1>
+    <h2>~ An Ocean Adventure ~</h2>
+    <p>Collect all cookie crumbs to clear each level!</p>
+    <p>Avoid sharks, stingrays &amp; porcupinefish!</p>
+    <p>Watch out for corals and seaweed!</p>
+    <p>&nbsp;</p>
+    <p>ARROW KEYS &mdash; Move</p>
+    <p>P / ESC &mdash; Pause &nbsp;|&nbsp; H &mdash; High Scores</p>
+    <p class="blink">PRESS ENTER TO START</p>
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  CRAB BREAKTHROUGH  -  Atari 8-bit style ocean game
+// ============================================================
+(() => {
+"use strict";
+
+const canvas  = document.getElementById("game-canvas");
+const ctx     = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const scoreEl = document.getElementById("score-display");
+const levelEl = document.getElementById("level-display");
+const crumbEl = document.getElementById("crumbs-display");
+const livesEl = document.getElementById("lives-display");
+
+const W = canvas.width;   // 640
+const H = canvas.height;  // 480
+const TILE = 32;
+const COLS = W / TILE;     // 20
+const ROWS = H / TILE;     // 15
+
+// ---- Audio engine (retro bleeps) ----
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx;
+function ensureAudio() { if (!audioCtx) audioCtx = new AudioCtx(); }
+
+function playTone(freq, dur, type = "square", vol = 0.12) {
+  ensureAudio();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+
+function sfxCollect()  { playTone(880, 0.08); setTimeout(() => playTone(1320, 0.10), 60); }
+function sfxHurt()     { playTone(150, 0.3, "sawtooth", 0.18); }
+function sfxLevelUp()  { [0,100,200,300].forEach((d,i) => setTimeout(() => playTone(440+i*220, 0.12), d)); }
+function sfxGameOver() { [0,200,400].forEach((d,i) => setTimeout(() => playTone(300-i*80, 0.25, "sawtooth", 0.15), d)); }
+
+// ---- Pixel art sprite drawing helpers ----
+// Colors
+const C = {
+  crabBody: "#e03020", crabClaw: "#ff5533", crabEye: "#ffffff", crabPupil: "#111111",
+  crabLeg: "#cc2211",
+  sharkBody: "#5577aa", sharkFin: "#446688", sharkBelly: "#99bbdd", sharkEye: "#ff2222",
+  rayBody: "#6655aa", rayWing: "#8877cc", rayTail: "#554488", rayEye: "#ffcc00",
+  puffBody: "#ddaa33", puffSpine: "#aa7711", puffEye: "#111111", puffBelly: "#ffdd77",
+  urchinBody: "#2a1a33", urchinSpine: "#443355", urchinCenter: "#6644aa",
+  penguinBody: "#222233", penguinBelly: "#eeeeff", penguinBeak: "#ff8811", penguinEye: "#ffffff",
+  megaBody: "#334466", megaFin: "#223355", megaBelly: "#667799", megaEye: "#ff0000", megaTooth: "#ffffff",
+  coral1: "#ff6688", coral2: "#ff4466", coral3: "#cc3355",
+  seaweed1: "#22aa44", seaweed2: "#33cc55", seaweed3: "#118833",
+  cookie: "#ddaa55", cookieDark: "#bb8833", cookieChip: "#553311",
+  sand1: "#c2a645", sand2: "#b89a3d", water1: "#0e2a5a", water2: "#112e62",
+  bubble: "rgba(180,220,255,0.35)"
+};
+
+// Draw a filled rect at pixel level on canvas (scaled)
+function px(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round(x), Math.round(y), w, h);
+}
+
+// ---- Sprite renderers (draw at given top-left with TILE size) ----
+
+// Player color palettes: [body, claw, leg]
+const PLAYER_COLORS = [
+  { body: "#e03020", claw: "#ff5533", leg: "#cc2211", label: "RED" },   // P1
+  { body: "#2060dd", claw: "#4488ff", leg: "#1144bb", label: "BLUE" },  // P2
+  { body: "#20bb40", claw: "#44ee55", leg: "#119922", label: "GREEN" }, // P3
+  { body: "#dd9920", claw: "#ffbb44", leg: "#aa7711", label: "GOLD" },  // P4
+];
+
+// Key bindings per player (bubble = personal shield toggle)
+const PLAYER_KEYS = [
+  { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", bubble: "ShiftRight" },
+  { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD", bubble: "KeyQ" },
+  { up: "KeyI", down: "KeyK", left: "KeyJ", right: "KeyL", bubble: "KeyU" },
+  { up: "Numpad8", down: "Numpad5", left: "Numpad4", right: "Numpad6", bubble: "Numpad0" },
+];
+
+function drawCrab(x, y, frame, colorIdx) {
+  const pc = PLAYER_COLORS[colorIdx || 0] || PLAYER_COLORS[0];
+  const f = frame % 2;
+  // Body
+  px(x+6, y+10, 20, 12, pc.body);
+  px(x+4, y+12, 24, 8, pc.body);
+  // Claws
+  px(x + (f ? 1 : 0), y+8, 6, 6, pc.claw);
+  px(x+25 + (f ? -1 : 0), y+8, 6, 6, pc.claw);
+  px(x + (f ? 0 : 1), y+6, 4, 4, pc.claw);
+  px(x+27 + (f ? 0 : -1), y+6, 4, 4, pc.claw);
+  // Eyes
+  px(x+9, y+10, 4, 4, C.crabEye);
+  px(x+19, y+10, 4, 4, C.crabEye);
+  px(x+10, y+11, 2, 2, C.crabPupil);
+  px(x+20, y+11, 2, 2, C.crabPupil);
+  // Legs
+  for (let i = 0; i < 3; i++) {
+    const ly = y + 20 + i * 2 + (f && i % 2 ? 1 : 0);
+    px(x+4 - i, ly, 4, 2, pc.leg);
+    px(x+24 + i, ly, 4, 2, pc.leg);
+  }
+}
+
+function drawBabyCrab(x, y, frame) {
+  const f = frame % 2;
+  const bob = Math.sin(frame * 0.1) * 2;
+  const yy = y + bob;
+  // Tiny body
+  px(x+10, y+14, 12, 8, "#ff6688");
+  px(x+9, y+16, 14, 4, "#ff6688");
+  // Claws
+  px(x+6 + (f ? 1 : 0), y+14, 4, 4, "#ff8899");
+  px(x+22 + (f ? -1 : 0), y+14, 4, 4, "#ff8899");
+  // Eyes
+  px(x+12, y+14, 3, 3, "#ffffff");
+  px(x+18, y+14, 3, 3, "#ffffff");
+  px(x+13, y+15, 1, 1, "#111111");
+  px(x+19, y+15, 1, 1, "#111111");
+  // Heart above
+  px(x+14, y+4+bob, 4, 4, "#ff3344");
+  px(x+12, y+6+bob, 8, 4, "#ff3344");
+  px(x+14, y+10+bob, 4, 2, "#ff3344");
+  // Sparkle
+  if (frame % 24 < 12) {
+    px(x+22, y+4+bob, 2, 2, "#ffffff");
+  }
+}
+
+function drawShark(x, y, frame) {
+  const f = frame % 2;
+  // Body
+  px(x+4, y+10, 24, 10, C.sharkBody);
+  px(x+2, y+12, 28, 6, C.sharkBody);
+  // Belly
+  px(x+6, y+16, 18, 4, C.sharkBelly);
+  // Fin
+  px(x+13, y+4, 6, 8, C.sharkFin);
+  px(x+14, y+2, 4, 4, C.sharkFin);
+  // Tail
+  px(x + (f ? 0 : 1), y+11, 5, 8, C.sharkFin);
+  // Eye
+  px(x+24, y+11, 3, 3, C.sharkEye);
+  // Mouth
+  px(x+28, y+15, 3, 2, "#334466");
+  // Teeth
+  px(x+28, y+14, 1, 1, "#ffffff");
+  px(x+30, y+14, 1, 1, "#ffffff");
+}
+
+function drawStingray(x, y, frame) {
+  const f = frame % 2;
+  // Wings
+  px(x+2, y+12 + (f ? -1 : 1), 28, 6, C.rayWing);
+  px(x+6, y+10, 20, 10, C.rayBody);
+  // Body center
+  px(x+10, y+12, 12, 6, C.rayBody);
+  // Tail
+  px(x+14, y+22, 4, 8, C.rayTail);
+  px(x+15, y+28, 2, 3, C.rayTail);
+  // Eyes
+  px(x+10, y+12, 3, 3, C.rayEye);
+  px(x+19, y+12, 3, 3, C.rayEye);
+}
+
+function drawPorcupinefish(x, y, frame, puffed) {
+  const f = frame % 2;
+  if (puffed) {
+    // Puffed up - bigger
+    px(x+2, y+2, 28, 28, C.puffBody);
+    px(x+6, y+6, 20, 20, C.puffBelly);
+    // Spines
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2 + (f ? 0.1 : 0);
+      const sx = x + 16 + Math.cos(angle) * 15;
+      const sy = y + 16 + Math.sin(angle) * 15;
+      px(sx, sy, 3, 3, C.puffSpine);
+    }
+    // Eyes
+    px(x+10, y+10, 4, 4, "#ffffff");
+    px(x+20, y+10, 4, 4, "#ffffff");
+    px(x+11, y+11, 2, 2, C.puffEye);
+    px(x+21, y+11, 2, 2, C.puffEye);
+  } else {
+    // Normal
+    px(x+6, y+8, 20, 16, C.puffBody);
+    px(x+8, y+10, 16, 12, C.puffBelly);
+    // Small spines
+    px(x+6, y+6, 2, 2, C.puffSpine);
+    px(x+24, y+6, 2, 2, C.puffSpine);
+    px(x+6, y+22, 2, 2, C.puffSpine);
+    px(x+24, y+22, 2, 2, C.puffSpine);
+    // Eyes
+    px(x+11, y+12, 3, 3, "#ffffff");
+    px(x+19, y+12, 3, 3, "#ffffff");
+    px(x+12, y+13, 2, 2, C.puffEye);
+    px(x+20, y+13, 2, 2, C.puffEye);
+    // Tail
+    px(x+3, y+14, 4, 4, C.puffBody);
+  }
+}
+
+function drawSeaUrchin(x, y, frame) {
+  const f = frame % 2;
+  // Spines radiating out
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 + (f ? 0.05 : 0);
+    const sx = x + 16 + Math.cos(angle) * 13;
+    const sy = y + 16 + Math.sin(angle) * 13;
+    px(sx, sy, 2, 2, C.urchinSpine);
+    const sx2 = x + 16 + Math.cos(angle) * 10;
+    const sy2 = y + 16 + Math.sin(angle) * 10;
+    px(sx2, sy2, 2, 2, C.urchinSpine);
+  }
+  // Body
+  px(x+8, y+8, 16, 16, C.urchinBody);
+  px(x+10, y+6, 12, 20, C.urchinBody);
+  px(x+6, y+10, 20, 12, C.urchinBody);
+  // Center highlight
+  px(x+12, y+12, 8, 8, C.urchinCenter);
+  // Eyes
+  px(x+12, y+13, 3, 3, "#ffaaff");
+  px(x+18, y+13, 3, 3, "#ffaaff");
+  px(x+13, y+14, 1, 1, "#111");
+  px(x+19, y+14, 1, 1, "#111");
+}
+
+function drawPenguin(x, y, frame) {
+  const f = frame % 2;
+  const waddle = f ? 1 : -1;
+  // Body
+  px(x+8, y+6, 16, 20, C.penguinBody);
+  px(x+6, y+8, 20, 16, C.penguinBody);
+  // Belly
+  px(x+10, y+10, 12, 14, C.penguinBelly);
+  // Head
+  px(x+10, y+2, 12, 10, C.penguinBody);
+  // Eyes
+  px(x+11, y+5, 3, 3, C.penguinEye);
+  px(x+18, y+5, 3, 3, C.penguinEye);
+  px(x+12, y+6, 2, 2, "#111");
+  px(x+19, y+6, 2, 2, "#111");
+  // Beak
+  px(x+14, y+8, 4, 3, C.penguinBeak);
+  px(x+15, y+10, 2, 2, C.penguinBeak);
+  // Flippers
+  px(x+4 + waddle, y+12, 4, 8, C.penguinBody);
+  px(x+24 - waddle, y+12, 4, 8, C.penguinBody);
+  // Feet
+  px(x+9, y+26, 5, 3, C.penguinBeak);
+  px(x+18, y+26, 5, 3, C.penguinBeak);
+}
+
+function drawMegalodon(x, y, frame) {
+  // Megalodon is 2 tiles wide, 1.5 tiles tall — drawn from top-left of a 2-tile area
+  const f = frame % 2;
+  // Massive body
+  px(x+4, y+8, 52, 20, C.megaBody);
+  px(x+8, y+4, 44, 28, C.megaBody);
+  px(x+12, y+2, 36, 32, C.megaBody);
+  // Belly
+  px(x+14, y+18, 30, 12, C.megaBelly);
+  // Dorsal fin
+  px(x+26, y-6, 8, 12, C.megaFin);
+  px(x+28, y-10, 6, 8, C.megaFin);
+  px(x+30, y-12, 4, 4, C.megaFin);
+  // Tail
+  px(x + (f ? 0 : 2), y+8, 8, 18, C.megaFin);
+  px(x + (f ? -2 : 0), y+4, 6, 8, C.megaFin);
+  px(x + (f ? -2 : 0), y+24, 6, 8, C.megaFin);
+  // Eye
+  px(x+46, y+10, 5, 5, C.megaEye);
+  px(x+48, y+11, 3, 3, "#ffff00");
+  // Mouth - gaping jaw
+  px(x+50, y+18, 12, 4, "#223344");
+  px(x+52, y+16, 10, 8, "#223344");
+  // Teeth
+  for (let i = 0; i < 5; i++) {
+    px(x+50+i*2, y+15, 2, 3, C.megaTooth);
+    px(x+50+i*2, y+22, 2, 3, C.megaTooth);
+  }
+  // Scars
+  px(x+30, y+10, 6, 1, "#556688");
+  px(x+32, y+12, 4, 1, "#556688");
+  // Pectoral fin
+  px(x+34, y+28, 10, 4, C.megaFin);
+  px(x+36, y+30, 8, 4, C.megaFin);
+}
+
+function drawCoral(x, y, variant) {
+  const colors = [C.coral1, C.coral2, C.coral3];
+  const c = colors[variant % 3];
+  const c2 = colors[(variant + 1) % 3];
+  // Base
+  px(x+8, y+20, 16, 12, c);
+  px(x+4, y+24, 24, 8, c);
+  // Branches
+  px(x+10, y+6, 4, 16, c);
+  px(x+18, y+10, 4, 12, c2);
+  px(x+6, y+12, 4, 10, c2);
+  // Tips
+  px(x+8, y+4, 8, 4, c2);
+  px(x+16, y+8, 8, 4, c);
+  px(x+4, y+10, 6, 4, c);
+  // Details
+  px(x+12, y+8, 2, 2, "#ffffff");
+  px(x+20, y+12, 2, 2, "#ffffff");
+}
+
+function drawSeaweed(x, y, frame, variant) {
+  const sway = Math.sin(frame * 0.1 + variant) * 2;
+  const c1 = C.seaweed1, c2 = C.seaweed2, c3 = C.seaweed3;
+  // Stalk
+  for (let i = 0; i < 7; i++) {
+    const sx = x + 12 + Math.sin(i * 0.8 + frame * 0.06 + variant) * (3 + sway);
+    px(sx, y + 4 + i * 4, 8, 5, i % 2 ? c1 : c2);
+  }
+  // Leaves
+  px(x + 6 + sway, y + 8, 6, 4, c3);
+  px(x + 20 - sway, y + 16, 6, 4, c3);
+  px(x + 4 + sway, y + 22, 6, 4, c2);
+}
+
+function drawCookieCrumb(x, y, frame) {
+  const bob = Math.sin(frame * 0.08) * 2;
+  // Cookie circle
+  px(x+10, y+8+bob, 12, 14, C.cookie);
+  px(x+8, y+10+bob, 16, 10, C.cookie);
+  // Darker edge
+  px(x+10, y+8+bob, 12, 2, C.cookieDark);
+  px(x+10, y+20+bob, 12, 2, C.cookieDark);
+  // Chips
+  px(x+12, y+12+bob, 3, 3, C.cookieChip);
+  px(x+18, y+15+bob, 3, 3, C.cookieChip);
+  px(x+13, y+18+bob, 2, 2, C.cookieChip);
+  // Sparkle
+  if (frame % 30 < 15) {
+    px(x+20, y+7+bob, 2, 2, "#ffffff");
+  }
+}
+
+// ---- Background rendering ----
+function drawBackground(frame) {
+  // Water gradient
+  for (let row = 0; row < ROWS; row++) {
+    const t = row / ROWS;
+    const r = Math.round(10 + t * 8);
+    const g = Math.round(30 + t * 20);
+    const b = Math.round(80 + t * 30);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, row * TILE, W, TILE);
+  }
+
+  // Sandy bottom (last 2 rows area)
+  for (let col = 0; col < COLS; col++) {
+    const shade = (col + Math.floor(frame / 20)) % 2 === 0 ? C.sand1 : C.sand2;
+    px(col * TILE, (ROWS - 1) * TILE, TILE, TILE, shade);
+    // Grains
+    if (col % 3 === 0) px(col * TILE + 8, (ROWS-1) * TILE + 4, 2, 2, "#d4b84d");
+  }
+
+  // Bubbles
+  for (let i = 0; i < 6; i++) {
+    const bx = ((i * 107 + frame * 0.3) % W);
+    const by = ((i * 73 + frame * (0.4 + i * 0.05)) % (H - 60));
+    const br = 3 + (i % 3) * 2;
+    ctx.beginPath();
+    ctx.arc(bx, H - 40 - by, br, 0, Math.PI * 2);
+    ctx.fillStyle = C.bubble;
+    ctx.fill();
+  }
+
+  // Light rays from surface
+  ctx.save();
+  ctx.globalAlpha = 0.03 + Math.sin(frame * 0.02) * 0.01;
+  for (let i = 0; i < 4; i++) {
+    const rx = 80 + i * 160 + Math.sin(frame * 0.01 + i) * 20;
+    ctx.fillStyle = "#88ccff";
+    ctx.beginPath();
+    ctx.moveTo(rx, 0);
+    ctx.lineTo(rx + 60, H);
+    ctx.lineTo(rx - 20, H);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---- Level maps ----
+// 0 = empty, 1 = coral, 2 = seaweed, 3 = cookie crumb
+// Enemies placed separately
+const LEVEL_TEMPLATES = [
+  // Level 1 — Gentle introduction: 1 shark, 1 stingray
+  {
+    map: [
+      "00000000000000000000",
+      "00000000000000000000",
+      "00030003000030000300",
+      "00000000000000000000",
+      "01000200010002000100",
+      "00000000000000000000",
+      "00030003000030000300",
+      "00000000000000000000",
+      "00200100020001000020",
+      "00000000000000000000",
+      "00030003000030000300",
+      "00000000000000000000",
+      "00000100000002000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 15, row: 3, dir: -1 },
+      { type: "stingray", col: 5, row: 7, dir: 1 },
+    ],
+    playerStart: { col: 1, row: 13 },
+  },
+  // Level 2 — More enemies, porcupinefish introduced
+  {
+    map: [
+      "00000000000000000000",
+      "00300030003000300030",
+      "01000010000100001000",
+      "00000000000000000000",
+      "00030003000300030003",
+      "00001002000020010000",
+      "00000000000000000000",
+      "03000300030003000300",
+      "00020001000010020000",
+      "00000000000000000000",
+      "00300030003000300030",
+      "01000100000001000100",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 18, row: 2, dir: -1 },
+      { type: "shark", col: 2, row: 8, dir: 1 },
+      { type: "stingray", col: 10, row: 5, dir: 1 },
+      { type: "porcupinefish", col: 14, row: 10, dir: -1 },
+    ],
+    playerStart: { col: 0, row: 13 },
+  },
+  // Level 3 — Denser maze, more of everything
+  {
+    map: [
+      "00000000000000000000",
+      "03020300030203000302",
+      "00010000010000010000",
+      "03000300030003000300",
+      "00000100000001000000",
+      "00300030003000300030",
+      "02000020000200002000",
+      "03000300030003000300",
+      "00010000010000010000",
+      "00300030003000300030",
+      "00000200000002000000",
+      "03020300030203000300",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 17, row: 1, dir: -1 },
+      { type: "shark", col: 3, row: 6, dir: 1 },
+      { type: "stingray", col: 10, row: 3, dir: -1 },
+      { type: "stingray", col: 8, row: 9, dir: 1 },
+      { type: "porcupinefish", col: 15, row: 5, dir: -1 },
+      { type: "porcupinefish", col: 5, row: 11, dir: 1 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 4 — Sea urchins introduced (baby crab level!)
+  {
+    map: [
+      "00000000000000000000",
+      "03010301030103010301",
+      "00000000000000000000",
+      "00200030002000300020",
+      "00000000000000000000",
+      "01030103010301030103",
+      "00000000000000000000",
+      "00300020003000200030",
+      "00000000000000000000",
+      "03010301030103010301",
+      "00000000000000000000",
+      "00200030002000300020",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 18, row: 2, dir: -1 },
+      { type: "shark", col: 1, row: 8, dir: 1 },
+      { type: "stingray", col: 6, row: 4, dir: 1 },
+      { type: "porcupinefish", col: 10, row: 1, dir: 1 },
+      { type: "urchin", col: 5, row: 5, dir: 0 },
+      { type: "urchin", col: 14, row: 5, dir: 0 },
+      { type: "urchin", col: 9, row: 9, dir: 0 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 5 — More urchins and sharks
+  {
+    map: [
+      "00000000000000000000",
+      "03000300030003000300",
+      "00020002000200020002",
+      "03000300030003000300",
+      "00010001000100010001",
+      "00300030003000300030",
+      "02000200020002000200",
+      "00300030003000300030",
+      "01000100010001000100",
+      "03000300030003000300",
+      "00020002000200020002",
+      "03000300030003000300",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 0, row: 2, dir: 1 },
+      { type: "shark", col: 19, row: 8, dir: -1 },
+      { type: "stingray", col: 14, row: 5, dir: -1 },
+      { type: "urchin", col: 10, row: 4, dir: 0 },
+      { type: "urchin", col: 10, row: 8, dir: 0 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 6 — Penguins introduced, fast diagonal divers
+  {
+    map: [
+      "00000000000000000000",
+      "03020103020103020103",
+      "01000200010002000100",
+      "03000300030003000300",
+      "00020100020001000200",
+      "00300030003000300030",
+      "01000200010002000100",
+      "03020103020103020103",
+      "00010000010000010000",
+      "00300030003000300030",
+      "02000100020001000200",
+      "03020103020103020103",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 0, row: 2, dir: 1 },
+      { type: "shark", col: 19, row: 6, dir: -1 },
+      { type: "stingray", col: 8, row: 7, dir: 1 },
+      { type: "penguin", col: 5, row: 3, dir: 1 },
+      { type: "penguin", col: 15, row: 9, dir: -1 },
+      { type: "urchin", col: 10, row: 5, dir: 0 },
+      { type: "urchin", col: 10, row: 9, dir: 0 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 7 — Urchin gauntlet
+  {
+    map: [
+      "00000000000000000000",
+      "03000030000300003000",
+      "00100010001000100010",
+      "00030000030000030000",
+      "02000020000200002000",
+      "00003000003000003000",
+      "00100010001000100010",
+      "03000030000300003000",
+      "00002000002000002000",
+      "00030000030000030000",
+      "01000010001000100010",
+      "00300003000030000300",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 17, row: 1, dir: -1 },
+      { type: "shark", col: 3, row: 7, dir: 1 },
+      { type: "urchin", col: 5, row: 3, dir: 0 },
+      { type: "urchin", col: 14, row: 3, dir: 0 },
+      { type: "urchin", col: 9, row: 6, dir: 0 },
+      { type: "urchin", col: 5, row: 9, dir: 0 },
+      { type: "urchin", col: 14, row: 9, dir: 0 },
+      { type: "penguin", col: 8, row: 1, dir: 1 },
+    ],
+    playerStart: { col: 0, row: 13 },
+  },
+  // Level 8 — Penguin swarm (baby crab level!)
+  {
+    map: [
+      "00000000000000000000",
+      "03010300030103000301",
+      "00000200000002000000",
+      "00300030003000300030",
+      "01000010000100001000",
+      "03020300030203000302",
+      "00000000000000000000",
+      "00300030003000300030",
+      "02000100020001000200",
+      "03000300030003000300",
+      "00010200000002010000",
+      "00300030003000300030",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 18, row: 3, dir: -1 },
+      { type: "shark", col: 1, row: 9, dir: 1 },
+      { type: "penguin", col: 3, row: 1, dir: 1 },
+      { type: "penguin", col: 16, row: 1, dir: -1 },
+      { type: "penguin", col: 10, row: 5, dir: 1 },
+      { type: "penguin", col: 7, row: 9, dir: -1 },
+      { type: "urchin", col: 10, row: 2, dir: 0 },
+      { type: "urchin", col: 10, row: 8, dir: 0 },
+      { type: "porcupinefish", col: 4, row: 11, dir: 1 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 9 — Full chaos, all enemies except megalodon
+  {
+    map: [
+      "00000000000000000000",
+      "03010201030102010301",
+      "00200100020001000020",
+      "03000300030003000300",
+      "01020001000010020100",
+      "00300030003000300030",
+      "02010200020102000201",
+      "03000300030003000300",
+      "00100020001000200010",
+      "00300030003000300030",
+      "01000102000020100001",
+      "03020103020103020103",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "shark", col: 0, row: 2, dir: 1 },
+      { type: "shark", col: 19, row: 8, dir: -1 },
+      { type: "stingray", col: 5, row: 4, dir: 1 },
+      { type: "stingray", col: 14, row: 10, dir: -1 },
+      { type: "penguin", col: 3, row: 1, dir: 1 },
+      { type: "penguin", col: 16, row: 6, dir: -1 },
+      { type: "penguin", col: 10, row: 10, dir: 1 },
+      { type: "porcupinefish", col: 6, row: 6, dir: 1 },
+      { type: "urchin", col: 10, row: 5, dir: 0 },
+      { type: "urchin", col: 4, row: 9, dir: 0 },
+      { type: "urchin", col: 16, row: 9, dir: 0 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+  // Level 10 — MEGALODON BOSS LEVEL
+  {
+    map: [
+      "00000000000000000000",
+      "00300030003000300030",
+      "00000000000000000000",
+      "03000300030003000300",
+      "00010000000000010000",
+      "00300030003000300030",
+      "00000000000000000000",
+      "03000300030003000300",
+      "00000100000001000000",
+      "00300030003000300030",
+      "00000000000000000000",
+      "03000300030003000300",
+      "00000000000000000000",
+      "00000000000000000000",
+      "00000000000000000000",
+    ],
+    enemies: [
+      { type: "megalodon", col: 8, row: 2, dir: -1 },
+      { type: "shark", col: 0, row: 6, dir: 1 },
+      { type: "shark", col: 19, row: 10, dir: -1 },
+      { type: "penguin", col: 4, row: 4, dir: 1 },
+      { type: "penguin", col: 15, row: 8, dir: -1 },
+      { type: "urchin", col: 6, row: 6, dir: 0 },
+      { type: "urchin", col: 13, row: 6, dir: 0 },
+      { type: "stingray", col: 10, row: 10, dir: 1 },
+    ],
+    playerStart: { col: 10, row: 13 },
+  },
+];
+
+// ---- Game state ----
+const STATE = {
+  TITLE: 0, PLAYING: 1, DYING: 2, LEVEL_CLEAR: 3, GAME_OVER: 4, WIN: 5,
+  PAUSED: 6, HIGHSCORES: 7,
+};
+
+let state = STATE.TITLE;
+let score = 0;
+let level = 0;
+let frame = 0;
+let stateTimer = 0;
+let pausedFrom = STATE.PLAYING;
+let nameEntry = "";
+let namePromptActive = false;
+let numPlayers = 1;
+let selectedPlayers = 1; // title screen selection
+
+// Current level data
+let grid = [];
+let cookies = [];
+let enemies = [];
+let players = []; // array of { x, y, frame, invuln, lives, active, idx }
+let babyCrab = null;
+
+// ---- High-score system (localStorage) ----
+const HS_KEY = "crabBreakthrough_highscores";
+const SAVE_KEY = "crabBreakthrough_save";
+const MAX_SCORES = 10;
+
+function loadHighScores() {
+  try { return JSON.parse(localStorage.getItem(HS_KEY)) || []; }
+  catch { return []; }
+}
+function saveHighScores(list) {
+  localStorage.setItem(HS_KEY, JSON.stringify(list));
+}
+function addHighScore(name, sc, lv) {
+  const list = loadHighScores();
+  list.push({ name: name.toUpperCase().slice(0, 8) || "AAA", score: sc, level: lv + 1 });
+  list.sort((a, b) => b.score - a.score);
+  if (list.length > MAX_SCORES) list.length = MAX_SCORES;
+  saveHighScores(list);
+  return list;
+}
+function isHighScore(sc) {
+  const list = loadHighScores();
+  if (list.length < MAX_SCORES) return true;
+  return sc > list[list.length - 1].score;
+}
+
+// ---- Save / Load game ----
+function saveGame() {
+  const data = {
+    score, numPlayers, level,
+    players: players.map(p => ({
+      x: p.x, y: p.y, invuln: p.invuln, lives: p.lives, active: p.active, bubbled: p.bubbled, idx: p.idx,
+    })),
+    cookies: cookies.map(c => ({ col: c.col, row: c.row, collected: c.collected })),
+    enemies: enemies.map(e => ({
+      type: e.type, x: e.x, y: e.y, dir: e.dir, dirY: e.dirY,
+      speed: e.speed, puffed: e.puffed, puffTimer: e.puffTimer,
+      lunging: e.lunging, lungeTimer: e.lungeTimer,
+      homeX: e.homeX, homeY: e.homeY,
+    })),
+    grid: grid.map(r => [...r]),
+    babyCrab: babyCrab ? { col: babyCrab.col, row: babyCrab.row, collected: babyCrab.collected } : null,
+  };
+  localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  return true;
+}
+function loadGame() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    score = d.score; numPlayers = d.numPlayers || 1; level = d.level;
+    grid = d.grid.map(r => [...r]);
+    cookies = d.cookies.map(c => ({ col: c.col, row: c.row, collected: c.collected }));
+    enemies = d.enemies.map(e => ({
+      type: e.type, x: e.x, y: e.y, dir: e.dir, dirY: e.dirY || 0,
+      speed: e.speed, frame: 0, puffed: e.puffed, puffTimer: e.puffTimer,
+      lunging: e.lunging || false, lungeTimer: e.lungeTimer || 0,
+      homeX: e.homeX || e.x, homeY: e.homeY || e.y,
+    }));
+    players = (d.players || []).map(p => ({
+      x: p.x, y: p.y, frame: 0, invuln: p.invuln || 0,
+      lives: p.lives, active: p.active !== false, bubbled: p.bubbled || false, idx: p.idx,
+    }));
+    if (players.length === 0) {
+      players = [{ x: 0, y: 0, frame: 0, invuln: 0, lives: 3, active: true, bubbled: false, idx: 0 }];
+    }
+    babyCrab = d.babyCrab || null;
+    return true;
+  } catch { return false; }
+}
+function hasSavedGame() {
+  return !!localStorage.getItem(SAVE_KEY);
+}
+function deleteSave() {
+  localStorage.removeItem(SAVE_KEY);
+}
+
+// Input
+const keys = {};
+window.addEventListener("keydown", e => {
+  keys[e.code] = true;
+
+  // ---- Name entry for high-score ----
+  if (namePromptActive) {
+    e.preventDefault();
+    if (e.code === "Enter" && nameEntry.length > 0) {
+      addHighScore(nameEntry, score, level);
+      namePromptActive = false;
+      nameEntry = "";
+      state = STATE.HIGHSCORES;
+    } else if (e.code === "Backspace") {
+      nameEntry = nameEntry.slice(0, -1);
+    } else if (e.key.length === 1 && nameEntry.length < 8) {
+      nameEntry += e.key.toUpperCase();
+    }
+    return;
+  }
+
+  // ---- High-score board dismiss ----
+  if (state === STATE.HIGHSCORES) {
+    if (e.code === "Enter" || e.code === "Escape") {
+      state = STATE.TITLE;
+      overlay.classList.remove("hidden");
+      updateTitleOverlay();
+    }
+    e.preventDefault();
+    return;
+  }
+
+  // ---- Title screen ----
+  if (state === STATE.TITLE) {
+    if (e.code === "Enter" || e.code === "Space") {
+      startGame();
+    } else if (e.code === "Digit1") {
+      selectedPlayers = 1; updateTitleOverlay();
+    } else if (e.code === "Digit2") {
+      selectedPlayers = 2; updateTitleOverlay();
+    } else if (e.code === "Digit3") {
+      selectedPlayers = 3; updateTitleOverlay();
+    } else if (e.code === "Digit4") {
+      selectedPlayers = 4; updateTitleOverlay();
+    } else if (e.code === "KeyL" && hasSavedGame()) {
+      // Load saved game
+      ensureAudio();
+      if (loadGame()) {
+        selectedPlayers = numPlayers;
+        overlay.classList.add("hidden");
+        state = STATE.PLAYING;
+        deleteSave();
+      }
+    } else if (e.code === "KeyH") {
+      overlay.classList.add("hidden");
+      state = STATE.HIGHSCORES;
+    }
+    e.preventDefault();
+    return;
+  }
+
+  // ---- Per-player bubble toggle (during gameplay) ----
+  if (state === STATE.PLAYING) {
+    for (const p of players) {
+      if (!p.active) continue;
+      const pk = PLAYER_KEYS[p.idx];
+      if (e.code === pk.bubble) {
+        p.bubbled = !p.bubbled;
+        if (p.bubbled) {
+          playTone(600, 0.06, "sine", 0.08);
+          setTimeout(() => playTone(800, 0.08, "sine", 0.06), 40);
+        } else {
+          playTone(400, 0.06, "sine", 0.06);
+        }
+        e.preventDefault();
+        return;
+      }
+    }
+  }
+
+  // ---- Pause toggle ----
+  if ((e.code === "Escape" || e.code === "KeyP") && state === STATE.PLAYING) {
+    pausedFrom = state;
+    state = STATE.PAUSED;
+    e.preventDefault();
+    return;
+  }
+  if (state === STATE.PAUSED) {
+    if (e.code === "Escape" || e.code === "KeyP") {
+      state = pausedFrom;
+    } else if (e.code === "KeyS") {
+      // Save game while paused
+      saveGame();
+      sfxCollect();
+    } else if (e.code === "KeyQ") {
+      // Quit to title from pause
+      state = STATE.TITLE;
+      overlay.classList.remove("hidden");
+      updateTitleOverlay();
+    }
+    e.preventDefault();
+    return;
+  }
+
+  // ---- Game-over / win restart ----
+  if (e.code === "Enter" || e.code === "Space") {
+    if (state === STATE.GAME_OVER || state === STATE.WIN) {
+      if (!namePromptActive) {
+        if (isHighScore(score)) {
+          namePromptActive = true;
+          nameEntry = "";
+        } else {
+          state = STATE.TITLE;
+          overlay.classList.remove("hidden");
+          updateTitleOverlay();
+        }
+      }
+    }
+  }
+
+  // Prevent scrolling
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) {
+    e.preventDefault();
+  }
+});
+window.addEventListener("keyup", e => { keys[e.code] = false; });
+
+// ---- Level loading ----
+function loadLevel(idx) {
+  const template = LEVEL_TEMPLATES[idx % LEVEL_TEMPLATES.length];
+  // Scale difficulty for levels beyond templates
+  const diffMult = 1 + Math.floor(idx / LEVEL_TEMPLATES.length) * 0.3;
+
+  grid = [];
+  cookies = [];
+  enemies = [];
+
+  for (let r = 0; r < ROWS; r++) {
+    grid[r] = [];
+    const rowStr = template.map[r] || "00000000000000000000";
+    for (let c = 0; c < COLS; c++) {
+      const ch = rowStr[c] || "0";
+      grid[r][c] = parseInt(ch);
+      if (ch === "3") {
+        cookies.push({ col: c, row: r, collected: false });
+        grid[r][c] = 0; // cookies stored separately
+      }
+    }
+  }
+
+  template.enemies.forEach(e => {
+    const baseSpeed = { shark: 2.24, stingray: 1.54, porcupinefish: 0.84,
+      urchin: 0, penguin: 1.96, megalodon: 1.82 }[e.type] || 0.7;
+    const speed = baseSpeed * diffMult;
+    enemies.push({
+      type: e.type,
+      x: e.col * TILE,
+      y: e.row * TILE,
+      dir: e.dir,
+      dirY: e.type === "stingray" ? 1 : e.type === "penguin" ? 1 : 0,
+      speed: Math.min(speed, 7),
+      frame: 0,
+      puffed: false,
+      puffTimer: 0,
+      lunging: false,
+      lungeTimer: 0,
+      homeX: e.col * TILE,
+      homeY: e.row * TILE,
+    });
+  });
+
+  const ps = template.playerStart;
+  // Position all players near the start with slight offsets
+  const offsets = [
+    { dx: 0, dy: 0 },
+    { dx: TILE, dy: 0 },
+    { dx: 0, dy: -TILE },
+    { dx: TILE, dy: -TILE },
+  ];
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i];
+    p.x = Math.max(0, Math.min(W - TILE, ps.col * TILE + offsets[i].dx));
+    p.y = Math.max(0, Math.min(H - TILE, ps.row * TILE + offsets[i].dy));
+    p.frame = 0;
+    p.invuln = 0;
+  }
+
+  // Remove cookies that sit on the same tile as a sea urchin
+  const urchinSet = new Set();
+  for (const e of enemies) {
+    if (e.type === "urchin") {
+      urchinSet.add(Math.floor(e.x / TILE) + "," + Math.floor(e.y / TILE));
+    }
+  }
+  cookies = cookies.filter(ck => !urchinSet.has(ck.col + "," + ck.row));
+
+  // Spawn baby crab (extra life) on every 4th level (4,8,12,...)
+  babyCrab = null;
+  if ((idx + 1) % 4 === 0) {
+    // Find a random empty tile not on player start
+    const empties = [];
+    for (let r = 1; r < ROWS - 2; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c] === 0 && !(c === ps.col && r === ps.row) &&
+            !cookies.some(ck => ck.col === c && ck.row === r)) {
+          empties.push({ col: c, row: r });
+        }
+      }
+    }
+    if (empties.length > 0) {
+      const pick = empties[Math.floor(Math.random() * empties.length)];
+      babyCrab = { col: pick.col, row: pick.row, collected: false };
+    }
+  }
+}
+
+function startGame() {
+  ensureAudio();
+  state = STATE.PLAYING;
+  score = 0;
+  numPlayers = selectedPlayers;
+  players = [];
+  for (let i = 0; i < numPlayers; i++) {
+    players.push({ x: 0, y: 0, frame: 0, invuln: 0, lives: 3, active: true, bubbled: false, idx: i });
+  }
+  level = 0;
+  deleteSave();
+  overlay.classList.add("hidden");
+  loadLevel(0);
+}
+
+function updateTitleOverlay() {
+  const hasSave = hasSavedGame();
+  const controlsInfo = [
+    "P1: ARROW KEYS &nbsp; Bubble: R-SHIFT",
+    "P2: W A S D &nbsp; Bubble: Q",
+    "P3: I J K L &nbsp; Bubble: U",
+    "P4: NUMPAD 8 4 5 6 &nbsp; Bubble: NUM-0",
+  ];
+  let controlsHtml = "";
+  for (let i = 0; i < selectedPlayers; i++) {
+    const col = PLAYER_COLORS[i].body;
+    controlsHtml += `<p style="color:${col}">${controlsInfo[i]}</p>`;
+  }
+  const plrNums = [1,2,3,4].map(n =>
+    n === selectedPlayers
+      ? `<span style="color:#ffcc00;text-decoration:underline;">${n}</span>`
+      : `<span style="color:#888;">${n}</span>`
+  ).join(" ");
+  overlay.innerHTML = `
+    <h1>CRAB BREAKTHROUGH</h1>
+    <h2>~ An Ocean Adventure ~</h2>
+    <p>Collect all cookie crumbs to clear each level!</p>
+    <p>Avoid sharks, stingrays &amp; porcupinefish!</p>
+    <p>Watch out for corals and seaweed!</p>
+    <p>&nbsp;</p>
+    <p>PLAYERS: ${plrNums} &nbsp; (press 1-4)</p>
+    <p>&nbsp;</p>
+    ${controlsHtml}
+    <p>&nbsp;</p>
+    <p>P / ESC &mdash; Pause &nbsp;|&nbsp; H &mdash; High Scores</p>
+    ${hasSave ? '<p style="color:#44ffaa;">L &mdash; Load Saved Game</p>' : ''}
+    <p class="blink">PRESS ENTER TO START</p>
+  `;
+}
+updateTitleOverlay();
+
+function nextLevel() {
+  level++;
+  loadLevel(level);
+  state = STATE.PLAYING;
+}
+
+// ---- Collision helpers ----
+function isSolid(col, row) {
+  if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return true;
+  const cell = grid[row][col];
+  return cell === 1; // coral blocks movement
+}
+
+function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+  return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+// ---- Find nearest active player (for enemy AI) ----
+function findNearestPlayer(x, y) {
+  let best = null, bestDist = Infinity;
+  for (const p of players) {
+    if (!p.active || p.bubbled) continue; // skip inactive & bubbled
+    const d = Math.hypot(p.x - x, p.y - y);
+    if (d < bestDist) { bestDist = d; best = p; }
+  }
+  return best;
+}
+
+// ---- Player movement (all active players) ----
+function updatePlayers() {
+  for (const p of players) {
+    if (!p.active) continue;
+    if (p.bubbled) continue; // bubbled players are frozen & protected
+    if (p.invuln > 0) p.invuln--;
+
+    const pk = PLAYER_KEYS[p.idx];
+    const speed = 3.36;
+    let dx = 0, dy = 0;
+    if (keys[pk.left])  dx = -speed;
+    if (keys[pk.right]) dx = speed;
+    if (keys[pk.up])    dy = -speed;
+    if (keys[pk.down])  dy = speed;
+
+    // Normalize diagonal
+    if (dx && dy) { dx *= 0.707; dy *= 0.707; }
+
+    // Try X
+    let nx = p.x + dx;
+    let ny = p.y;
+    const m = 4; // margin
+    if (dx !== 0) {
+      const left = Math.floor((nx + m) / TILE);
+      const right = Math.floor((nx + TILE - 1 - m) / TILE);
+      const top = Math.floor((ny + m) / TILE);
+      const bot = Math.floor((ny + TILE - 1 - m) / TILE);
+      let blocked = false;
+      for (let r = top; r <= bot; r++) {
+        for (let c = left; c <= right; c++) {
+          if (isSolid(c, r)) blocked = true;
+        }
+      }
+      if (!blocked) p.x = nx;
+    }
+
+    // Try Y
+    ny = p.y + dy;
+    nx = p.x;
+    if (dy !== 0) {
+      const left = Math.floor((nx + m) / TILE);
+      const right = Math.floor((nx + TILE - 1 - m) / TILE);
+      const top = Math.floor((ny + m) / TILE);
+      const bot = Math.floor((ny + TILE - 1 - m) / TILE);
+      let blocked = false;
+      for (let r = top; r <= bot; r++) {
+        for (let c = left; c <= right; c++) {
+          if (isSolid(c, r)) blocked = true;
+        }
+      }
+      if (!blocked) p.y = ny;
+    }
+
+    // Clamp to bounds
+    p.x = Math.max(0, Math.min(W - TILE, p.x));
+    p.y = Math.max(0, Math.min(H - TILE, p.y));
+
+    // Animate
+    if (dx || dy) p.frame += 0.15;
+
+    // Seaweed bounce — push the crab away from the seaweed center
+    const pcol = Math.floor((p.x + TILE/2) / TILE);
+    const prow = Math.floor((p.y + TILE/2) / TILE);
+    if (pcol >= 0 && pcol < COLS && prow >= 0 && prow < ROWS && grid[prow][pcol] === 2) {
+      const swCx = pcol * TILE + TILE / 2;
+      const swCy = prow * TILE + TILE / 2;
+      let bx = (p.x + TILE / 2) - swCx;
+      let by = (p.y + TILE / 2) - swCy;
+      const len = Math.hypot(bx, by) || 1;
+      bx /= len; by /= len;
+      const bounceForce = 3.5;
+      p.x += bx * bounceForce;
+      p.y += by * bounceForce;
+      p.x = Math.max(0, Math.min(W - TILE, p.x));
+      p.y = Math.max(0, Math.min(H - TILE, p.y));
+    }
+
+    // Collect cookies
+    for (const ck of cookies) {
+      if (ck.collected) continue;
+      if (rectsOverlap(p.x + 4, p.y + 4, 24, 24, ck.col * TILE + 6, ck.row * TILE + 6, 20, 20)) {
+        ck.collected = true;
+        score += 100;
+        sfxCollect();
+      }
+    }
+
+    // Collect baby crab (extra life for this player)
+    if (babyCrab && !babyCrab.collected) {
+      if (rectsOverlap(p.x + 4, p.y + 4, 24, 24,
+          babyCrab.col * TILE + 6, babyCrab.row * TILE + 6, 20, 20)) {
+        babyCrab.collected = true;
+        p.lives++;
+        score += 250;
+        sfxCollect();
+        playTone(660, 0.1); setTimeout(() => playTone(990, 0.15), 80);
+      }
+    }
+  }
+
+  // Check level complete (shared — any player combination can collect all cookies)
+  if (cookies.every(c => c.collected)) {
+    score += 500 + level * 200;
+    state = STATE.LEVEL_CLEAR;
+    stateTimer = 120;
+    sfxLevelUp();
+  }
+}
+
+// ---- Enemy AI ----
+function updateEnemies() {
+  for (const e of enemies) {
+    e.frame += 0.1;
+
+    // Find nearest active player for AI targeting
+    const target = findNearestPlayer(e.x, e.y);
+
+    switch (e.type) {
+      case "shark":
+        // Horizontal patrol, turns at edges or solids
+        e.x += e.dir * e.speed;
+        if (e.x <= 0 || e.x >= W - TILE) e.dir *= -1;
+        // Check solid
+        {
+          const fc = e.dir > 0 ? Math.floor((e.x + TILE) / TILE) : Math.floor(e.x / TILE);
+          const fr = Math.floor((e.y + TILE/2) / TILE);
+          if (fc < 0 || fc >= COLS || isSolid(fc, fr)) e.dir *= -1;
+        }
+        break;
+
+      case "stingray":
+        // Diagonal bouncing
+        e.x += e.dir * e.speed;
+        e.y += e.dirY * e.speed * 0.7;
+        if (e.x <= 0 || e.x >= W - TILE) e.dir *= -1;
+        if (e.y <= 0 || e.y >= H - TILE * 2) e.dirY *= -1;
+        // Check solids
+        {
+          const fc = Math.floor((e.x + TILE/2) / TILE);
+          const fr = Math.floor((e.y + TILE/2) / TILE);
+          if (isSolid(fc, fr)) { e.dir *= -1; e.dirY *= -1; }
+        }
+        break;
+
+      case "porcupinefish":
+        // Slow movement, puffs up when nearest player is near
+        {
+          const dist = target ? Math.hypot(target.x - e.x, target.y - e.y) : Infinity;
+          if (dist < TILE * 4 && target) {
+            e.puffed = true;
+            e.puffTimer = 60;
+            // Move toward nearest player slowly
+            const angle = Math.atan2(target.y - e.y, target.x - e.x);
+            e.x += Math.cos(angle) * e.speed * 0.5;
+            e.y += Math.sin(angle) * e.speed * 0.5;
+          } else {
+            if (e.puffTimer > 0) {
+              e.puffTimer--;
+            } else {
+              e.puffed = false;
+            }
+            // Patrol
+            e.x += e.dir * e.speed;
+            if (e.x <= 0 || e.x >= W - TILE) e.dir *= -1;
+          }
+          // Solid check
+          const fc = Math.floor((e.x + TILE/2) / TILE);
+          const fr = Math.floor((e.y + TILE/2) / TILE);
+          if (isSolid(fc, fr)) { e.dir *= -1; e.x += e.dir * e.speed * 2; }
+          // Bounds
+          e.x = Math.max(0, Math.min(W - TILE, e.x));
+          e.y = Math.max(0, Math.min(H - TILE, e.y));
+        }
+        break;
+
+      case "urchin":
+        // Static — doesn't move, just sits there being spiky
+        break;
+
+      case "penguin":
+        // Fast diagonal dive-bomber — bounces around, speeds up near nearest player
+        {
+          const dist = target ? Math.hypot(target.x - e.x, target.y - e.y) : Infinity;
+          const boost = dist < TILE * 3 ? 1.8 : 1;
+          e.x += e.dir * e.speed * boost;
+          e.y += e.dirY * e.speed * 0.8 * boost;
+          if (e.x <= 0 || e.x >= W - TILE) e.dir *= -1;
+          if (e.y <= 0 || e.y >= H - TILE * 2) e.dirY *= -1;
+          const fc = Math.floor((e.x + TILE/2) / TILE);
+          const fr = Math.floor((e.y + TILE/2) / TILE);
+          if (isSolid(fc, fr)) { e.dir *= -1; e.dirY *= -1; }
+        }
+        break;
+
+      case "megalodon":
+        // Massive shark — patrols horizontally, charges toward nearest player when aligned
+        {
+          const tgt = target;
+          const yDiff = tgt ? Math.abs(tgt.y - e.y) : Infinity;
+          if (yDiff < TILE * 1.5 && tgt) {
+            const chDir = tgt.x > e.x ? 1 : -1;
+            e.x += chDir * e.speed * 1.6;
+            e.dir = chDir;
+          } else {
+            e.x += e.dir * e.speed;
+          }
+          // Slow vertical tracking
+          if (tgt) {
+            if (tgt.y > e.y + 2) e.y += 0.56;
+            else if (tgt.y < e.y - 2) e.y -= 0.56;
+          }
+          if (e.x <= 0 || e.x >= W - TILE * 2) e.dir *= -1;
+          e.x = Math.max(0, Math.min(W - TILE * 2, e.x));
+          e.y = Math.max(0, Math.min(H - TILE * 2, e.y));
+        }
+        break;
+    }
+
+    // Collision with each active player (independent hit detection)
+    let hitMargin = 6;
+    let hw = TILE, hh = TILE;
+    if (e.type === "porcupinefish" && e.puffed) hitMargin = 2;
+    if (e.type === "urchin") hitMargin = 4;
+    if (e.type === "megalodon") { hw = TILE * 2; hh = TILE * 1.2; hitMargin = 4; }
+    for (const p of players) {
+      if (!p.active || p.invuln > 0 || p.bubbled) continue; // bubble protects
+      if (rectsOverlap(p.x + 6, p.y + 6, 20, 20, e.x + hitMargin, e.y + hitMargin, hw - hitMargin*2, hh - hitMargin*2)) {
+        playerHit(p);
+      }
+    }
+  }
+}
+
+function playerHit(p) {
+  p.lives--;
+  sfxHurt();
+  if (p.lives <= 0) {
+    p.active = false;
+    // Game over only when ALL players are out of lives
+    if (players.every(pl => !pl.active)) {
+      state = STATE.GAME_OVER;
+      stateTimer = 180;
+      deleteSave();
+      sfxGameOver();
+    }
+  } else {
+    p.invuln = 90; // 1.5 seconds of invulnerability
+  }
+}
+
+// ---- Rendering ----
+function render() {
+  drawBackground(frame);
+
+  // Draw grid obstacles
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = grid[r][c];
+      if (cell === 1) drawCoral(c * TILE, r * TILE, r + c);
+      if (cell === 2) drawSeaweed(c * TILE, r * TILE, frame, r * COLS + c);
+    }
+  }
+
+  // Draw cookies
+  for (const ck of cookies) {
+    if (!ck.collected) {
+      drawCookieCrumb(ck.col * TILE, ck.row * TILE, frame);
+    }
+  }
+
+  // Draw baby crab (extra life pickup)
+  if (babyCrab && !babyCrab.collected) {
+    drawBabyCrab(babyCrab.col * TILE, babyCrab.row * TILE, frame);
+  }
+
+  // Draw enemies
+  for (const e of enemies) {
+    const ef = Math.floor(e.frame);
+    switch (e.type) {
+      case "shark":
+        ctx.save();
+        if (e.dir < 0) {
+          ctx.translate(e.x + TILE, 0);
+          ctx.scale(-1, 1);
+          drawShark(0, e.y, ef);
+        } else {
+          drawShark(e.x, e.y, ef);
+        }
+        ctx.restore();
+        break;
+      case "stingray":
+        drawStingray(e.x, e.y, ef);
+        break;
+      case "porcupinefish":
+        drawPorcupinefish(e.x, e.y, ef, e.puffed);
+        break;
+      case "urchin":
+        drawSeaUrchin(e.x, e.y, ef);
+        break;
+      case "penguin":
+        ctx.save();
+        if (e.dir < 0) {
+          ctx.translate(e.x + TILE, 0);
+          ctx.scale(-1, 1);
+          drawPenguin(0, e.y, ef);
+        } else {
+          drawPenguin(e.x, e.y, ef);
+        }
+        ctx.restore();
+        break;
+      case "megalodon":
+        ctx.save();
+        if (e.dir < 0) {
+          ctx.translate(e.x + TILE * 2, 0);
+          ctx.scale(-1, 1);
+          drawMegalodon(0, e.y, ef);
+        } else {
+          drawMegalodon(e.x, e.y, ef);
+        }
+        ctx.restore();
+        break;
+    }
+  }
+
+  // Draw all active players (blink when invulnerable)
+  for (const p of players) {
+    if (!p.active) continue;
+    if (p.invuln <= 0 || Math.floor(p.invuln / 4) % 2 === 0) {
+      drawCrab(p.x, p.y, Math.floor(p.frame), p.idx);
+    }
+    // Draw protective bubble
+    if (p.bubbled) {
+      const cx = p.x + TILE / 2;
+      const cy = p.y + TILE / 2;
+      const pulse = Math.sin(frame * 0.08) * 0.1;
+      // Outer bubble
+      ctx.save();
+      ctx.globalAlpha = 0.25 + pulse;
+      ctx.beginPath();
+      ctx.arc(cx, cy, TILE * 0.78, 0, Math.PI * 2);
+      ctx.fillStyle = "#88ccff";
+      ctx.fill();
+      ctx.strokeStyle = "#aaddff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+      // Highlight shine
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      ctx.arc(cx - 7, cy - 9, 4, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.restore();
+      // Small sparkles rotating around bubble
+      for (let s = 0; s < 3; s++) {
+        const angle = (frame * 0.04) + (s / 3) * Math.PI * 2;
+        const sx = cx + Math.cos(angle) * TILE * 0.7;
+        const sy = cy + Math.sin(angle) * TILE * 0.7;
+        ctx.save();
+        ctx.globalAlpha = 0.6;
+        px(sx - 1, sy - 1, 2, 2, "#ffffff");
+        ctx.restore();
+      }
+    }
+  }
+
+  // HUD
+  const collected = cookies.filter(c => c.collected).length;
+  scoreEl.textContent = String(score).padStart(6, "0");
+  levelEl.textContent = level + 1;
+  crumbEl.textContent = `${collected}/${cookies.length}`;
+  let lifeStr = "";
+  for (const p of players) {
+    const col = PLAYER_COLORS[p.idx].body;
+    const hearts = p.active ? "\u2764".repeat(p.lives) : "\u2718";
+    const label = numPlayers > 1 ? "P" + (p.idx + 1) + ":" : "";
+    lifeStr += `<span style="color:${col}">${label}${hearts}</span> `;
+  }
+  livesEl.innerHTML = `<span class="life-icon">${lifeStr}</span>`;
+}
+
+function renderStateOverlays() {
+  if (state === STATE.LEVEL_CLEAR) {
+    ctx.fillStyle = "rgba(0,0,20,0.6)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#44ffaa";
+    ctx.font = "28px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("LEVEL CLEAR!", W/2, H/2 - 20);
+    ctx.fillStyle = "#ffcc44";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText(`BONUS: ${500 + level * 200}`, W/2, H/2 + 20);
+    ctx.textAlign = "left";
+  }
+
+  if (state === STATE.GAME_OVER) {
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ff3333";
+    ctx.font = "32px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("GAME OVER", W/2, H/2 - 30);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText(`FINAL SCORE: ${score}`, W/2, H/2 + 20);
+    if (stateTimer < 120) {
+      ctx.fillStyle = "#ffcc00";
+      ctx.font = "11px 'Press Start 2P'";
+      ctx.fillText("PRESS ENTER TO CONTINUE", W/2, H/2 + 60);
+    }
+    ctx.textAlign = "left";
+  }
+
+  if (state === STATE.WIN) {
+    ctx.fillStyle = "rgba(0,0,40,0.8)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ffdd44";
+    ctx.font = "24px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("CONGRATULATIONS!", W/2, H/2 - 40);
+    ctx.fillStyle = "#44ddff";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText("YOU CONQUERED THE OCEAN!", W/2, H/2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(`FINAL SCORE: ${score}`, W/2, H/2 + 40);
+    ctx.fillStyle = "#ffcc00";
+    ctx.font = "11px 'Press Start 2P'";
+    ctx.fillText("PRESS ENTER TO CONTINUE", W/2, H/2 + 80);
+    ctx.textAlign = "left";
+  }
+
+  // ---- Name entry prompt (overlaid on game-over/win) ----
+  if (namePromptActive) {
+    ctx.fillStyle = "rgba(0,0,0,0.85)";
+    ctx.fillRect(W/2 - 220, H/2 - 60, 440, 130);
+    ctx.strokeStyle = "#ffcc00";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(W/2 - 220, H/2 - 60, 440, 130);
+    ctx.fillStyle = "#ffcc00";
+    ctx.font = "14px 'Press Start 2P'";
+    ctx.textAlign = "center";
+    ctx.fillText("NEW HIGH SCORE!", W/2, H/2 - 30);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "11px 'Press Start 2P'";
+    ctx.fillText("ENTER YOUR NAME:", W/2, H/2);
+    // Name with cursor
+    const cursor = frame % 40 < 20 ? "_" : " ";
+    ctx.fillStyle = "#44ffaa";
+    ctx.font = "16px 'Press Start 2P'";
+    ctx.fillText(nameEntry + cursor, W/2, H/2 + 35);
+    ctx.fillStyle = "#888";
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillText("PRESS ENTER TO CONFIRM", W/2, H/2 + 58);
+    ctx.textAlign = "left";
+  }
+}
+
+function renderPauseScreen() {
+  // Keep the last game frame visible behind the overlay
+  render();
+  ctx.fillStyle = "rgba(0,0,20,0.80)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#44ddff";
+  ctx.font = "28px 'Press Start 2P'";
+  ctx.fillText("PAUSED", W/2, H/2 - 70);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "11px 'Press Start 2P'";
+  ctx.fillText("P / ESC  -  Resume", W/2, H/2 - 20);
+  ctx.fillText("S  -  Save Game", W/2, H/2 + 10);
+  ctx.fillText("Q  -  Quit to Title", W/2, H/2 + 40);
+
+  // Show "saved" flash
+  const savedData = localStorage.getItem(SAVE_KEY);
+  if (savedData) {
+    ctx.fillStyle = "#44ffaa";
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillText("GAME SAVED", W/2, H/2 + 70);
+  }
+
+  ctx.textAlign = "left";
+}
+
+function renderHighScores() {
+  drawBackground(frame);
+  ctx.fillStyle = "rgba(0,0,20,0.85)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffcc00";
+  ctx.font = "22px 'Press Start 2P'";
+  ctx.fillText("HIGH SCORES", W/2, 60);
+
+  const list = loadHighScores();
+  ctx.font = "10px 'Press Start 2P'";
+
+  // Header
+  ctx.fillStyle = "#44ddff";
+  ctx.textAlign = "left";
+  ctx.fillText("RANK", 120, 100);
+  ctx.fillText("NAME", 210, 100);
+  ctx.fillText("SCORE", 370, 100);
+  ctx.fillText("LVL", 520, 100);
+
+  // Separator line
+  ctx.fillStyle = "#334466";
+  ctx.fillRect(110, 108, 430, 2);
+
+  for (let i = 0; i < MAX_SCORES; i++) {
+    const y = 132 + i * 30;
+    const entry = list[i];
+    // Rank
+    ctx.fillStyle = i < 3 ? ["#ffdd44","#cccccc","#cc8844"][i] : "#888888";
+    ctx.textAlign = "left";
+    ctx.fillText(`${i + 1}.`, 130, y);
+
+    if (entry) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(entry.name, 210, y);
+      ctx.fillStyle = "#44ffaa";
+      ctx.fillText(String(entry.score).padStart(7, "0"), 370, y);
+      ctx.fillStyle = "#ffaa44";
+      ctx.fillText(String(entry.level), 530, y);
+    } else {
+      ctx.fillStyle = "#444444";
+      ctx.fillText("---", 210, y);
+      ctx.fillText("-------", 370, y);
+      ctx.fillText("-", 530, y);
+    }
+  }
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffcc00";
+  ctx.font = "11px 'Press Start 2P'";
+  if (frame % 60 < 30) {
+    ctx.fillText("PRESS ENTER / ESC TO GO BACK", W/2, H - 40);
+  }
+  ctx.textAlign = "left";
+}
+
+// ---- Fixed-timestep main loop (60 ticks/sec, hardware-independent) ----
+const TICK_RATE = 60;
+const TICK_MS = 1000 / TICK_RATE;  // ~16.67ms per tick
+let lastTimestamp = 0;
+let accumulator = 0;
+
+function tick() {
+  // One fixed-rate logic + animation tick
+  frame++;
+
+  switch (state) {
+    case STATE.PLAYING:
+      updatePlayers();
+      updateEnemies();
+      break;
+    case STATE.DYING:
+      stateTimer--;
+      if (stateTimer <= 0) {
+        loadLevel(level);
+        state = STATE.PLAYING;
+      }
+      break;
+    case STATE.LEVEL_CLEAR:
+      stateTimer--;
+      if (stateTimer <= 0) {
+        if (level >= LEVEL_TEMPLATES.length - 1) {
+          state = STATE.WIN;
+          stateTimer = 240;
+        } else {
+          nextLevel();
+        }
+      }
+      break;
+    case STATE.GAME_OVER:
+      if (stateTimer > 0) stateTimer--;
+      break;
+  }
+}
+
+function drawFrame() {
+  // Render current state (called once per display frame)
+  switch (state) {
+    case STATE.TITLE:
+      drawBackground(frame);
+      // Draw selected number of crabs on title screen
+      for (let i = 0; i < selectedPlayers; i++) {
+        const cx = W/2 - 16 + (i - (selectedPlayers - 1) / 2) * 40;
+        drawCrab(cx, H/2 + 60, Math.floor(frame * 0.15), i);
+      }
+      drawShark(100 + Math.sin(frame * 0.02) * 80, 200, Math.floor(frame * 0.1));
+      drawCookieCrumb(W/2 + 80, H/2 + 60, frame);
+      drawCoral(50, H - 80, 0);
+      drawSeaweed(550, H - 80, frame, 0);
+      drawStingray(400 + Math.cos(frame * 0.015) * 60, 150 + Math.sin(frame * 0.02) * 30, Math.floor(frame * 0.1));
+      drawPorcupinefish(300, 300, Math.floor(frame * 0.1), frame % 120 < 60);
+      drawSeaUrchin(80, H - 80, Math.floor(frame * 0.1));
+      drawPenguin(480 + Math.sin(frame * 0.025) * 40, 280 + Math.cos(frame * 0.03) * 20, Math.floor(frame * 0.15));
+      break;
+    case STATE.PLAYING:
+      render();
+      break;
+    case STATE.DYING:
+      render();
+      break;
+    case STATE.LEVEL_CLEAR:
+      render();
+      renderStateOverlays();
+      break;
+    case STATE.GAME_OVER:
+      render();
+      renderStateOverlays();
+      break;
+    case STATE.WIN:
+      render();
+      renderStateOverlays();
+      break;
+    case STATE.PAUSED:
+      renderPauseScreen();
+      break;
+    case STATE.HIGHSCORES:
+      renderHighScores();
+      break;
+  }
+}
+
+function gameLoop(timestamp) {
+  if (!lastTimestamp) lastTimestamp = timestamp;
+  let elapsed = timestamp - lastTimestamp;
+  lastTimestamp = timestamp;
+
+  // Cap elapsed to prevent spiral of death (e.g. tab was in background)
+  if (elapsed > 200) elapsed = 200;
+
+  accumulator += elapsed;
+
+  // Run fixed-rate ticks to catch up
+  while (accumulator >= TICK_MS) {
+    tick();
+    accumulator -= TICK_MS;
+  }
+
+  // Render once per display frame
+  drawFrame();
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ---- Kick off ----
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>

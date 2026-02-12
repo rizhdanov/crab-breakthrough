@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crab Breakthrough - Online</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  #game-wrapper {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  #hud {
+    display: flex;
+    justify-content: space-between;
+    width: 640px;
+    padding: 8px 4px;
+    color: #fff;
+    font-size: 11px;
+    text-shadow: 2px 2px #000;
+  }
+
+  #hud span { display: inline-block; }
+
+  #game-canvas {
+    border: 4px solid #1a1a5e;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: none;
+  }
+
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: rgba(0,0,20,0.85);
+    color: #fff;
+    text-align: center;
+    z-index: 10;
+  }
+
+  #overlay.hidden { display: none; }
+
+  #overlay h1 {
+    font-size: 28px;
+    color: #ff6644;
+    text-shadow: 3px 3px #000;
+    margin-bottom: 20px;
+    letter-spacing: 2px;
+  }
+
+  #overlay h2 {
+    font-size: 16px;
+    color: #44ddff;
+    text-shadow: 2px 2px #000;
+    margin-bottom: 16px;
+  }
+
+  #overlay p {
+    font-size: 10px;
+    color: #aaa;
+    line-height: 2;
+    margin-bottom: 6px;
+  }
+
+  #overlay .blink {
+    font-size: 12px;
+    color: #ffcc00;
+    margin-top: 24px;
+    animation: blink 1s steps(2) infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  .life-icon {
+    color: #ff4444;
+    font-size: 11px;
+  }
+
+  /* Lobby styles */
+  .lobby-input {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 14px;
+    padding: 8px 12px;
+    margin: 6px;
+    background: #112244;
+    color: #44ffaa;
+    border: 2px solid #334466;
+    text-transform: uppercase;
+    text-align: center;
+    outline: none;
+    width: 200px;
+  }
+  .lobby-input:focus { border-color: #44ddff; }
+  .lobby-input::placeholder { color: #445566; font-size: 10px; }
+
+  .lobby-btn {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 11px;
+    padding: 10px 20px;
+    margin: 8px;
+    background: #223366;
+    color: #ffcc00;
+    border: 2px solid #445588;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+  .lobby-btn:hover { background: #334477; border-color: #ffcc00; }
+  .lobby-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .room-code {
+    font-size: 32px;
+    color: #ffcc00;
+    letter-spacing: 8px;
+    margin: 12px 0;
+    text-shadow: 2px 2px #000;
+  }
+
+  .player-list {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0;
+  }
+  .player-list li {
+    font-size: 11px;
+    padding: 4px 0;
+  }
+
+  .error-msg {
+    color: #ff4444;
+    font-size: 10px;
+    margin: 8px 0;
+  }
+
+  .status-msg {
+    color: #44ddff;
+    font-size: 10px;
+    margin: 8px 0;
+  }
+</style>
+</head>
+<body>
+<div id="game-wrapper">
+  <div id="hud">
+    <span>SCORE: <span id="score-display">0</span></span>
+    <span>LEVEL: <span id="level-display">1</span></span>
+    <span>CRUMBS: <span id="crumbs-display">0/0</span></span>
+    <span id="lives-display"></span>
+  </div>
+  <canvas id="game-canvas" width="640" height="480"></canvas>
+  <div id="overlay">
+    <!-- Lobby content injected by JS -->
+  </div>
+</div>
+
+<script>
+// ============================================================
+//  CRAB BREAKTHROUGH  -  Online Multiplayer Client
+// ============================================================
+(() => {
+"use strict";
+
+const canvas  = document.getElementById("game-canvas");
+const ctx     = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const scoreEl = document.getElementById("score-display");
+const levelEl = document.getElementById("level-display");
+const crumbEl = document.getElementById("crumbs-display");
+const livesEl = document.getElementById("lives-display");
+
+const W = canvas.width;   // 640
+const H = canvas.height;  // 480
+const TILE = 32;
+const COLS = W / TILE;
+const ROWS = H / TILE;
+
+// ---- Game state constants (must match server) ----
+const STATE = {
+  LOBBY: -1, PLAYING: 1, DYING: 2, LEVEL_CLEAR: 3,
+  GAME_OVER: 4, WIN: 5,
+};
+
+// ---- Audio engine (retro bleeps) ----
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx;
+function ensureAudio() { if (!audioCtx) audioCtx = new AudioCtx(); }
+
+function playTone(freq, dur, type = "square", vol = 0.12) {
+  ensureAudio();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + dur);
+}
+
+function sfxCollect()  { playTone(880, 0.08); setTimeout(() => playTone(1320, 0.10), 60); }
+function sfxHurt()     { playTone(150, 0.3, "sawtooth", 0.18); }
+function sfxLevelUp()  { [0,100,200,300].forEach((d,i) => setTimeout(() => playTone(440+i*220, 0.12), d)); }
+function sfxGameOver() { [0,200,400].forEach((d,i) => setTimeout(() => playTone(300-i*80, 0.25, "sawtooth", 0.15), d)); }
+function sfxBabyCrab() { sfxCollect(); playTone(660, 0.1); setTimeout(() => playTone(990, 0.15), 80); }
+function sfxBubbleOn() { playTone(600, 0.06, "sine", 0.08); setTimeout(() => playTone(800, 0.08, "sine", 0.06), 40); }
+function sfxBubbleOff(){ playTone(400, 0.06, "sine", 0.06); }
+
+// ---- Pixel art sprite drawing helpers ----
+const C = {
+  crabBody: "#e03020", crabClaw: "#ff5533", crabEye: "#ffffff", crabPupil: "#111111",
+  crabLeg: "#cc2211",
+  sharkBody: "#5577aa", sharkFin: "#446688", sharkBelly: "#99bbdd", sharkEye: "#ff2222",
+  rayBody: "#6655aa", rayWing: "#8877cc", rayTail: "#554488", rayEye: "#ffcc00",
+  puffBody: "#ddaa33", puffSpine: "#aa7711", puffEye: "#111111", puffBelly: "#ffdd77",
+  urchinBody: "#2a1a33", urchinSpine: "#443355", urchinCenter: "#6644aa",
+  penguinBody: "#222233", penguinBelly: "#eeeeff", penguinBeak: "#ff8811", penguinEye: "#ffffff",
+  megaBody: "#334466", megaFin: "#223355", megaBelly: "#667799", megaEye: "#ff0000", megaTooth: "#ffffff",
+  coral1: "#ff6688", coral2: "#ff4466", coral3: "#cc3355",
+  seaweed1: "#22aa44", seaweed2: "#33cc55", seaweed3: "#118833",
+  cookie: "#ddaa55", cookieDark: "#bb8833", cookieChip: "#553311",
+  sand1: "#c2a645", sand2: "#b89a3d", water1: "#0e2a5a", water2: "#112e62",
+  bubble: "rgba(180,220,255,0.35)"
+};
+
+const PLAYER_COLORS = [
+  { body: "#e03020", claw: "#ff5533", leg: "#cc2211", label: "RED" },
+  { body: "#2060dd", claw: "#4488ff", leg: "#1144bb", label: "BLUE" },
+  { body: "#20bb40", claw: "#44ee55", leg: "#119922", label: "GREEN" },
+  { body: "#dd9920", claw: "#ffbb44", leg: "#aa7711", label: "GOLD" },
+];
+
+function px(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round(x), Math.round(y), w, h);
+}
+
+// ---- All sprite renderers (identical to local version) ----
+
+function drawCrab(x, y, frame, colorIdx) {
+  const pc = PLAYER_COLORS[colorIdx || 0] || PLAYER_COLORS[0];
+  const f = frame % 2;
+  px(x+6, y+10, 20, 12, pc.body);
+  px(x+4, y+12, 24, 8, pc.body);
+  px(x + (f ? 1 : 0), y+8, 6, 6, pc.claw);
+  px(x+25 + (f ? -1 : 0), y+8, 6, 6, pc.claw);
+  px(x + (f ? 0 : 1), y+6, 4, 4, pc.claw);
+  px(x+27 + (f ? 0 : -1), y+6, 4, 4, pc.claw);
+  px(x+9, y+10, 4, 4, C.crabEye);
+  px(x+19, y+10, 4, 4, C.crabEye);
+  px(x+10, y+11, 2, 2, C.crabPupil);
+  px(x+20, y+11, 2, 2, C.crabPupil);
+  for (let i = 0; i < 3; i++) {
+    const ly = y + 20 + i * 2 + (f && i % 2 ? 1 : 0);
+    px(x+4 - i, ly, 4, 2, pc.leg);
+    px(x+24 + i, ly, 4, 2, pc.leg);
+  }
+}
+
+function drawBabyCrab(x, y, frame) {
+  const f = frame % 2;
+  const bob = Math.sin(frame * 0.1) * 2;
+  px(x+10, y+14, 12, 8, "#ff6688");
+  px(x+9, y+16, 14, 4, "#ff6688");
+  px(x+6 + (f ? 1 : 0), y+14, 4, 4, "#ff8899");
+  px(x+22 + (f ? -1 : 0), y+14, 4, 4, "#ff8899");
+  px(x+12, y+14, 3, 3, "#ffffff");
+  px(x+18, y+14, 3, 3, "#ffffff");
+  px(x+13, y+15, 1, 1, "#111111");
+  px(x+19, y+15, 1, 1, "#111111");
+  px(x+14, y+4+bob, 4, 4, "#ff3344");
+  px(x+12, y+6+bob, 8, 4, "#ff3344");
+  px(x+14, y+10+bob, 4, 2, "#ff3344");
+  if (frame % 24 < 12) px(x+22, y+4+bob, 2, 2, "#ffffff");
+}
+
+function drawShark(x, y, frame) {
+  const f = frame % 2;
+  px(x+4, y+10, 24, 10, C.sharkBody);
+  px(x+2, y+12, 28, 6, C.sharkBody);
+  px(x+6, y+16, 18, 4, C.sharkBelly);
+  px(x+13, y+4, 6, 8, C.sharkFin);
+  px(x+14, y+2, 4, 4, C.sharkFin);
+  px(x + (f ? 0 : 1), y+11, 5, 8, C.sharkFin);
+  px(x+24, y+11, 3, 3, C.sharkEye);
+  px(x+28, y+15, 3, 2, "#334466");
+  px(x+28, y+14, 1, 1, "#ffffff");
+  px(x+30, y+14, 1, 1, "#ffffff");
+}
+
+function drawStingray(x, y, frame) {
+  const f = frame % 2;
+  px(x+2, y+12 + (f ? -1 : 1), 28, 6, C.rayWing);
+  px(x+6, y+10, 20, 10, C.rayBody);
+  px(x+10, y+12, 12, 6, C.rayBody);
+  px(x+14, y+22, 4, 8, C.rayTail);
+  px(x+15, y+28, 2, 3, C.rayTail);
+  px(x+10, y+12, 3, 3, C.rayEye);
+  px(x+19, y+12, 3, 3, C.rayEye);
+}
+
+function drawPorcupinefish(x, y, frame, puffed) {
+  const f = frame % 2;
+  if (puffed) {
+    px(x+2, y+2, 28, 28, C.puffBody);
+    px(x+6, y+6, 20, 20, C.puffBelly);
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2 + (f ? 0.1 : 0);
+      px(x + 16 + Math.cos(angle) * 15, y + 16 + Math.sin(angle) * 15, 3, 3, C.puffSpine);
+    }
+    px(x+10, y+10, 4, 4, "#ffffff"); px(x+20, y+10, 4, 4, "#ffffff");
+    px(x+11, y+11, 2, 2, C.puffEye); px(x+21, y+11, 2, 2, C.puffEye);
+  } else {
+    px(x+6, y+8, 20, 16, C.puffBody);
+    px(x+8, y+10, 16, 12, C.puffBelly);
+    px(x+6, y+6, 2, 2, C.puffSpine); px(x+24, y+6, 2, 2, C.puffSpine);
+    px(x+6, y+22, 2, 2, C.puffSpine); px(x+24, y+22, 2, 2, C.puffSpine);
+    px(x+11, y+12, 3, 3, "#ffffff"); px(x+19, y+12, 3, 3, "#ffffff");
+    px(x+12, y+13, 2, 2, C.puffEye); px(x+20, y+13, 2, 2, C.puffEye);
+    px(x+3, y+14, 4, 4, C.puffBody);
+  }
+}
+
+function drawSeaUrchin(x, y, frame) {
+  const f = frame % 2;
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2 + (f ? 0.05 : 0);
+    px(x + 16 + Math.cos(angle) * 13, y + 16 + Math.sin(angle) * 13, 2, 2, C.urchinSpine);
+    px(x + 16 + Math.cos(angle) * 10, y + 16 + Math.sin(angle) * 10, 2, 2, C.urchinSpine);
+  }
+  px(x+8, y+8, 16, 16, C.urchinBody);
+  px(x+10, y+6, 12, 20, C.urchinBody);
+  px(x+6, y+10, 20, 12, C.urchinBody);
+  px(x+12, y+12, 8, 8, C.urchinCenter);
+  px(x+12, y+13, 3, 3, "#ffaaff"); px(x+18, y+13, 3, 3, "#ffaaff");
+  px(x+13, y+14, 1, 1, "#111"); px(x+19, y+14, 1, 1, "#111");
+}
+
+function drawPenguin(x, y, frame) {
+  const f = frame % 2;
+  const waddle = f ? 1 : -1;
+  px(x+8, y+6, 16, 20, C.penguinBody);
+  px(x+6, y+8, 20, 16, C.penguinBody);
+  px(x+10, y+10, 12, 14, C.penguinBelly);
+  px(x+10, y+2, 12, 10, C.penguinBody);
+  px(x+11, y+5, 3, 3, C.penguinEye); px(x+18, y+5, 3, 3, C.penguinEye);
+  px(x+12, y+6, 2, 2, "#111"); px(x+19, y+6, 2, 2, "#111");
+  px(x+14, y+8, 4, 3, C.penguinBeak);
+  px(x+15, y+10, 2, 2, C.penguinBeak);
+  px(x+4 + waddle, y+12, 4, 8, C.penguinBody);
+  px(x+24 - waddle, y+12, 4, 8, C.penguinBody);
+  px(x+9, y+26, 5, 3, C.penguinBeak);
+  px(x+18, y+26, 5, 3, C.penguinBeak);
+}
+
+function drawMegalodon(x, y, frame) {
+  const f = frame % 2;
+  px(x+4, y+8, 52, 20, C.megaBody);
+  px(x+8, y+4, 44, 28, C.megaBody);
+  px(x+12, y+2, 36, 32, C.megaBody);
+  px(x+14, y+18, 30, 12, C.megaBelly);
+  px(x+26, y-6, 8, 12, C.megaFin);
+  px(x+28, y-10, 6, 8, C.megaFin);
+  px(x+30, y-12, 4, 4, C.megaFin);
+  px(x + (f ? 0 : 2), y+8, 8, 18, C.megaFin);
+  px(x + (f ? -2 : 0), y+4, 6, 8, C.megaFin);
+  px(x + (f ? -2 : 0), y+24, 6, 8, C.megaFin);
+  px(x+46, y+10, 5, 5, C.megaEye);
+  px(x+48, y+11, 3, 3, "#ffff00");
+  px(x+50, y+18, 12, 4, "#223344");
+  px(x+52, y+16, 10, 8, "#223344");
+  for (let i = 0; i < 5; i++) {
+    px(x+50+i*2, y+15, 2, 3, C.megaTooth);
+    px(x+50+i*2, y+22, 2, 3, C.megaTooth);
+  }
+  px(x+30, y+10, 6, 1, "#556688");
+  px(x+32, y+12, 4, 1, "#556688");
+  px(x+34, y+28, 10, 4, C.megaFin);
+  px(x+36, y+30, 8, 4, C.megaFin);
+}
+
+function drawCoral(x, y, variant) {
+  const colors = [C.coral1, C.coral2, C.coral3];
+  const c = colors[variant % 3], c2 = colors[(variant + 1) % 3];
+  px(x+8, y+20, 16, 12, c); px(x+4, y+24, 24, 8, c);
+  px(x+10, y+6, 4, 16, c); px(x+18, y+10, 4, 12, c2); px(x+6, y+12, 4, 10, c2);
+  px(x+8, y+4, 8, 4, c2); px(x+16, y+8, 8, 4, c); px(x+4, y+10, 6, 4, c);
+  px(x+12, y+8, 2, 2, "#ffffff"); px(x+20, y+12, 2, 2, "#ffffff");
+}
+
+function drawSeaweed(x, y, frame, variant) {
+  const sway = Math.sin(frame * 0.1 + variant) * 2;
+  for (let i = 0; i < 7; i++) {
+    const sx = x + 12 + Math.sin(i * 0.8 + frame * 0.06 + variant) * (3 + sway);
+    px(sx, y + 4 + i * 4, 8, 5, i % 2 ? C.seaweed1 : C.seaweed2);
+  }
+  px(x + 6 + sway, y + 8, 6, 4, C.seaweed3);
+  px(x + 20 - sway, y + 16, 6, 4, C.seaweed3);
+  px(x + 4 + sway, y + 22, 6, 4, C.seaweed2);
+}
+
+function drawCookieCrumb(x, y, frame) {
+  const bob = Math.sin(frame * 0.08) * 2;
+  px(x+10, y+8+bob, 12, 14, C.cookie);
+  px(x+8, y+10+bob, 16, 10, C.cookie);
+  px(x+10, y+8+bob, 12, 2, C.cookieDark);
+  px(x+10, y+20+bob, 12, 2, C.cookieDark);
+  px(x+12, y+12+bob, 3, 3, C.cookieChip);
+  px(x+18, y+15+bob, 3, 3, C.cookieChip);
+  px(x+13, y+18+bob, 2, 2, C.cookieChip);
+  if (frame % 30 < 15) px(x+20, y+7+bob, 2, 2, "#ffffff");
+}
+
+// ---- Background ----
+function drawBackground(frame) {
+  for (let row = 0; row < ROWS; row++) {
+    const t = row / ROWS;
+    const r = Math.round(10 + t * 8), g = Math.round(30 + t * 20), b = Math.round(80 + t * 30);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(0, row * TILE, W, TILE);
+  }
+  for (let col = 0; col < COLS; col++) {
+    const shade = (col + Math.floor(frame / 20)) % 2 === 0 ? C.sand1 : C.sand2;
+    px(col * TILE, (ROWS - 1) * TILE, TILE, TILE, shade);
+    if (col % 3 === 0) px(col * TILE + 8, (ROWS-1) * TILE + 4, 2, 2, "#d4b84d");
+  }
+  for (let i = 0; i < 6; i++) {
+    const bx = ((i * 107 + frame * 0.3) % W);
+    const by = ((i * 73 + frame * (0.4 + i * 0.05)) % (H - 60));
+    const br = 3 + (i % 3) * 2;
+    ctx.beginPath();
+    ctx.arc(bx, H - 40 - by, br, 0, Math.PI * 2);
+    ctx.fillStyle = C.bubble;
+    ctx.fill();
+  }
+  ctx.save();
+  ctx.globalAlpha = 0.03 + Math.sin(frame * 0.02) * 0.01;
+  for (let i = 0; i < 4; i++) {
+    const rx = 80 + i * 160 + Math.sin(frame * 0.01 + i) * 20;
+    ctx.fillStyle = "#88ccff";
+    ctx.beginPath();
+    ctx.moveTo(rx, 0); ctx.lineTo(rx + 60, H); ctx.lineTo(rx - 20, H);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ============================================================
+//  NETWORKING
+// ============================================================
+
+let ws = null;
+let myPlayerIdx = -1;
+let isHost = false;
+let roomCode = "";
+let lobbyPlayers = [];
+let errorMsg = "";
+let statusMsg = "";
+let playerName = "";
+
+// Client-side view state
+const VIEW = { CONNECT: 0, LOBBY_MENU: 1, WAITING: 2, PLAYING: 3, GAME_ENDED: 4 };
+let viewState = VIEW.CONNECT;
+
+// Received game state from server
+let gameState = null;
+let prevGameState = null;
+let stateRecvTime = 0;
+const INTERP_MS = 50; // expected ms between state updates
+
+// Local frame counter for animations
+let localFrame = 0;
+
+// Input state
+const keys = {};
+let lastSentInput = null;
+
+// ---- WebSocket connection ----
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    statusMsg = "Connected!";
+    errorMsg = "";
+    viewState = VIEW.LOBBY_MENU;
+    updateLobbyOverlay();
+  };
+
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+    handleServerMessage(msg);
+  };
+
+  ws.onclose = () => {
+    statusMsg = "Disconnected. Reconnecting...";
+    viewState = VIEW.CONNECT;
+    updateLobbyOverlay();
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    errorMsg = "Connection error";
+  };
+}
+
+function sendMsg(msg) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+}
+
+function handleServerMessage(msg) {
+  switch (msg.type) {
+    case "room_created":
+      roomCode = msg.code;
+      myPlayerIdx = msg.playerIdx;
+      isHost = true;
+      lobbyPlayers = msg.players;
+      viewState = VIEW.WAITING;
+      errorMsg = "";
+      updateLobbyOverlay();
+      break;
+
+    case "room_joined":
+      roomCode = msg.code;
+      myPlayerIdx = msg.playerIdx;
+      isHost = false;
+      lobbyPlayers = msg.players;
+      viewState = VIEW.WAITING;
+      errorMsg = "";
+      updateLobbyOverlay();
+      break;
+
+    case "player_joined":
+      lobbyPlayers = msg.players;
+      updateLobbyOverlay();
+      break;
+
+    case "player_left":
+      lobbyPlayers = msg.players;
+      if (viewState === VIEW.WAITING) updateLobbyOverlay();
+      break;
+
+    case "you_are_host":
+      isHost = true;
+      if (viewState === VIEW.WAITING) updateLobbyOverlay();
+      break;
+
+    case "game_started":
+      ensureAudio();
+      gameState = msg.state;
+      prevGameState = null;
+      stateRecvTime = performance.now();
+      viewState = VIEW.PLAYING;
+      overlay.classList.add("hidden");
+      break;
+
+    case "state":
+      prevGameState = gameState;
+      gameState = msg;
+      stateRecvTime = performance.now();
+      // Play sound events
+      if (msg.events) {
+        for (const ev of msg.events) {
+          switch (ev.type) {
+            case "collect": sfxCollect(); break;
+            case "baby_crab": sfxBabyCrab(); break;
+            case "hit": sfxHurt(); break;
+            case "level_clear": sfxLevelUp(); break;
+            case "game_over": sfxGameOver(); break;
+            case "bubble":
+              if (ev.on) sfxBubbleOn(); else sfxBubbleOff();
+              break;
+          }
+        }
+      }
+      break;
+
+    case "game_ended":
+      viewState = VIEW.GAME_ENDED;
+      overlay.classList.remove("hidden");
+      updateGameEndedOverlay(msg.finalScore);
+      break;
+
+    case "error":
+      errorMsg = msg.msg;
+      updateLobbyOverlay();
+      break;
+  }
+}
+
+// ---- Input handling ----
+window.addEventListener("keydown", e => {
+  keys[e.code] = true;
+
+  // Bubble toggle
+  if (viewState === VIEW.PLAYING && e.code === "Space") {
+    sendMsg({ type: "bubble" });
+    e.preventDefault();
+    return;
+  }
+
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) {
+    e.preventDefault();
+  }
+});
+window.addEventListener("keyup", e => { keys[e.code] = false; });
+
+function sendInput() {
+  const input = {
+    type: "input",
+    up: !!keys["ArrowUp"] || !!keys["KeyW"] || !!keys["KeyI"] || !!keys["Numpad8"],
+    down: !!keys["ArrowDown"] || !!keys["KeyS"] || !!keys["KeyK"] || !!keys["Numpad5"],
+    left: !!keys["ArrowLeft"] || !!keys["KeyA"] || !!keys["KeyJ"] || !!keys["Numpad4"],
+    right: !!keys["ArrowRight"] || !!keys["KeyD"] || !!keys["KeyL"] || !!keys["Numpad6"],
+  };
+  // Only send when changed
+  const key = `${input.up}${input.down}${input.left}${input.right}`;
+  if (key !== lastSentInput) {
+    lastSentInput = key;
+    sendMsg(input);
+  }
+}
+
+// ---- Lobby UI ----
+function updateLobbyOverlay() {
+  overlay.classList.remove("hidden");
+  let html = '<h1>CRAB BREAKTHROUGH</h1><h2>~ Online Multiplayer ~</h2>';
+
+  if (viewState === VIEW.CONNECT) {
+    html += '<p class="status-msg">Connecting to server...</p>';
+    if (errorMsg) html += `<p class="error-msg">${errorMsg}</p>`;
+  }
+  else if (viewState === VIEW.LOBBY_MENU) {
+    html += `
+      <p>Enter your name:</p>
+      <input class="lobby-input" id="name-input" placeholder="YOUR NAME" maxlength="8" value="${playerName}">
+      <br>
+      <button class="lobby-btn" id="btn-create">CREATE ROOM</button>
+      <br>
+      <p style="margin-top:16px;">Or join with a code:</p>
+      <input class="lobby-input" id="code-input" placeholder="ROOM CODE" maxlength="4">
+      <button class="lobby-btn" id="btn-join">JOIN ROOM</button>
+    `;
+    if (errorMsg) html += `<p class="error-msg">${errorMsg}</p>`;
+  }
+  else if (viewState === VIEW.WAITING) {
+    html += `
+      <p>ROOM CODE:</p>
+      <div class="room-code">${roomCode}</div>
+      <p style="color:#aaa;font-size:9px;">Share this code with friends!</p>
+      <ul class="player-list" id="player-list">
+    `;
+    for (const p of lobbyPlayers) {
+      const color = PLAYER_COLORS[p.idx].body;
+      const tag = p.isHost ? " (HOST)" : "";
+      const me = p.idx === myPlayerIdx ? " (YOU)" : "";
+      html += `<li style="color:${color}">P${p.idx + 1}: ${p.name}${tag}${me}</li>`;
+    }
+    html += '</ul>';
+    if (isHost) {
+      const canStart = lobbyPlayers.length >= 1;
+      html += `<button class="lobby-btn" id="btn-start" ${canStart ? '' : 'disabled'}>START GAME</button>`;
+    } else {
+      html += '<p class="blink">Waiting for host to start...</p>';
+    }
+    html += `<button class="lobby-btn" id="btn-leave" style="margin-top:20px;font-size:9px;color:#888;">LEAVE ROOM</button>`;
+  }
+
+  overlay.innerHTML = html;
+
+  // Bind events after DOM update
+  setTimeout(() => {
+    const nameInput = document.getElementById("name-input");
+    const codeInput = document.getElementById("code-input");
+    const btnCreate = document.getElementById("btn-create");
+    const btnJoin = document.getElementById("btn-join");
+    const btnStart = document.getElementById("btn-start");
+    const btnLeave = document.getElementById("btn-leave");
+
+    if (nameInput) {
+      nameInput.focus();
+      nameInput.addEventListener("input", () => { playerName = nameInput.value; });
+    }
+    if (btnCreate) btnCreate.addEventListener("click", () => {
+      ensureAudio();
+      playerName = (nameInput ? nameInput.value : "HOST").toUpperCase() || "HOST";
+      sendMsg({ type: "create_room", name: playerName });
+    });
+    if (btnJoin) btnJoin.addEventListener("click", () => {
+      ensureAudio();
+      const code = codeInput ? codeInput.value.toUpperCase().trim() : "";
+      if (code.length !== 4) { errorMsg = "Code must be 4 characters"; updateLobbyOverlay(); return; }
+      playerName = (nameInput ? nameInput.value : "GUEST").toUpperCase() || "GUEST";
+      sendMsg({ type: "join_room", code, name: playerName });
+    });
+    if (codeInput) codeInput.addEventListener("keydown", e => {
+      if (e.code === "Enter" && btnJoin) btnJoin.click();
+    });
+    if (btnStart) btnStart.addEventListener("click", () => {
+      sendMsg({ type: "start_game" });
+    });
+    if (btnLeave) btnLeave.addEventListener("click", () => {
+      sendMsg({ type: "leave" });
+      viewState = VIEW.LOBBY_MENU;
+      roomCode = "";
+      lobbyPlayers = [];
+      isHost = false;
+      updateLobbyOverlay();
+    });
+  }, 0);
+}
+
+function updateGameEndedOverlay(finalScore) {
+  overlay.innerHTML = `
+    <h1>CRAB BREAKTHROUGH</h1>
+    <h2>Game Over</h2>
+    <p style="color:#ffcc00;font-size:14px;">FINAL SCORE: ${finalScore}</p>
+    <br>
+    ${isHost ? '<button class="lobby-btn" id="btn-back-lobby">BACK TO LOBBY</button>' :
+      '<p class="blink">Waiting for host...</p>'}
+    <button class="lobby-btn" id="btn-leave2" style="margin-top:20px;font-size:9px;color:#888;">LEAVE ROOM</button>
+  `;
+  setTimeout(() => {
+    const btnBack = document.getElementById("btn-back-lobby");
+    const btnLeave = document.getElementById("btn-leave2");
+    if (btnBack) btnBack.addEventListener("click", () => {
+      sendMsg({ type: "restart" });
+      viewState = VIEW.WAITING;
+      updateLobbyOverlay();
+    });
+    if (btnLeave) btnLeave.addEventListener("click", () => {
+      sendMsg({ type: "leave" });
+      viewState = VIEW.LOBBY_MENU;
+      roomCode = "";
+      lobbyPlayers = [];
+      isHost = false;
+      updateLobbyOverlay();
+    });
+  }, 0);
+}
+
+// ---- Interpolation helper ----
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function getInterpolatedState() {
+  if (!gameState) return null;
+  if (!prevGameState) return gameState;
+
+  const elapsed = performance.now() - stateRecvTime;
+  const t = Math.min(elapsed / INTERP_MS, 1);
+
+  // Only interpolate positions for smoothness
+  const interpPlayers = gameState.players.map((p, i) => {
+    const prev = prevGameState.players && prevGameState.players[i];
+    if (!prev) return p;
+    return { ...p, x: lerp(prev.x, p.x, t), y: lerp(prev.y, p.y, t) };
+  });
+
+  const interpEnemies = gameState.enemies.map((e, i) => {
+    const prev = prevGameState.enemies && prevGameState.enemies[i];
+    if (!prev || prev.type !== e.type) return e;
+    return { ...e, x: lerp(prev.x, e.x, t), y: lerp(prev.y, e.y, t) };
+  });
+
+  return { ...gameState, players: interpPlayers, enemies: interpEnemies };
+}
+
+// ---- Game rendering (from server state) ----
+function renderGame() {
+  const gs = getInterpolatedState();
+  if (!gs) return;
+
+  drawBackground(localFrame);
+
+  // Draw grid
+  if (gs.grid) {
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = gs.grid[r] && gs.grid[r][c];
+        if (cell === 1) drawCoral(c * TILE, r * TILE, r + c);
+        if (cell === 2) drawSeaweed(c * TILE, r * TILE, localFrame, r * COLS + c);
+      }
+    }
+  }
+
+  // Draw cookies
+  if (gs.cookies) {
+    for (const ck of gs.cookies) {
+      if (!ck.collected) drawCookieCrumb(ck.col * TILE, ck.row * TILE, localFrame);
+    }
+  }
+
+  // Draw baby crab
+  if (gs.babyCrab && !gs.babyCrab.collected) {
+    drawBabyCrab(gs.babyCrab.col * TILE, gs.babyCrab.row * TILE, localFrame);
+  }
+
+  // Draw enemies
+  if (gs.enemies) {
+    for (const e of gs.enemies) {
+      const ef = Math.floor(e.frame);
+      switch (e.type) {
+        case "shark":
+          ctx.save();
+          if (e.dir < 0) { ctx.translate(e.x + TILE, 0); ctx.scale(-1, 1); drawShark(0, e.y, ef); }
+          else drawShark(e.x, e.y, ef);
+          ctx.restore();
+          break;
+        case "stingray": drawStingray(e.x, e.y, ef); break;
+        case "porcupinefish": drawPorcupinefish(e.x, e.y, ef, e.puffed); break;
+        case "urchin": drawSeaUrchin(e.x, e.y, ef); break;
+        case "penguin":
+          ctx.save();
+          if (e.dir < 0) { ctx.translate(e.x + TILE, 0); ctx.scale(-1, 1); drawPenguin(0, e.y, ef); }
+          else drawPenguin(e.x, e.y, ef);
+          ctx.restore();
+          break;
+        case "megalodon":
+          ctx.save();
+          if (e.dir < 0) { ctx.translate(e.x + TILE * 2, 0); ctx.scale(-1, 1); drawMegalodon(0, e.y, ef); }
+          else drawMegalodon(e.x, e.y, ef);
+          ctx.restore();
+          break;
+      }
+    }
+  }
+
+  // Draw players
+  if (gs.players) {
+    for (const p of gs.players) {
+      if (!p.active) continue;
+      if (p.invuln <= 0 || Math.floor(p.invuln / 4) % 2 === 0) {
+        drawCrab(p.x, p.y, Math.floor(p.frame), p.idx);
+      }
+      // Bubble shield
+      if (p.bubbled) {
+        const cx = p.x + TILE / 2, cy = p.y + TILE / 2;
+        const pulse = Math.sin(localFrame * 0.08) * 0.1;
+        ctx.save();
+        ctx.globalAlpha = 0.25 + pulse;
+        ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.78, 0, Math.PI * 2);
+        ctx.fillStyle = "#88ccff"; ctx.fill();
+        ctx.strokeStyle = "#aaddff"; ctx.lineWidth = 2; ctx.stroke();
+        ctx.restore();
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath(); ctx.arc(cx - 7, cy - 9, 4, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffffff"; ctx.fill();
+        ctx.restore();
+        for (let s = 0; s < 3; s++) {
+          const angle = (localFrame * 0.04) + (s / 3) * Math.PI * 2;
+          px(cx + Math.cos(angle) * TILE * 0.7 - 1, cy + Math.sin(angle) * TILE * 0.7 - 1, 2, 2, "#ffffff");
+        }
+      }
+    }
+  }
+
+  // HUD
+  const collected = gs.cookies ? gs.cookies.filter(c => c.collected).length : 0;
+  const total = gs.cookies ? gs.cookies.length : 0;
+  scoreEl.textContent = String(gs.score || 0).padStart(6, "0");
+  levelEl.textContent = (gs.level || 0) + 1;
+  crumbEl.textContent = `${collected}/${total}`;
+
+  let lifeStr = "";
+  if (gs.players) {
+    for (const p of gs.players) {
+      const col = PLAYER_COLORS[p.idx].body;
+      const hearts = p.active ? "\u2764".repeat(p.lives) : "\u2718";
+      const label = gs.players.length > 1 ? "P" + (p.idx + 1) + ":" : "";
+      lifeStr += `<span style="color:${col}">${label}${hearts}</span> `;
+    }
+  }
+  livesEl.innerHTML = `<span class="life-icon">${lifeStr}</span>`;
+
+  // State overlays
+  if (gs.state === STATE.LEVEL_CLEAR) {
+    ctx.fillStyle = "rgba(0,0,20,0.6)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#44ffaa"; ctx.font = "28px 'Press Start 2P'"; ctx.textAlign = "center";
+    ctx.fillText("LEVEL CLEAR!", W/2, H/2 - 20);
+    ctx.fillStyle = "#ffcc44"; ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText(`BONUS: ${500 + (gs.level || 0) * 200}`, W/2, H/2 + 20);
+    ctx.textAlign = "left";
+  }
+  if (gs.state === STATE.GAME_OVER) {
+    ctx.fillStyle = "rgba(0,0,0,0.75)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ff3333"; ctx.font = "32px 'Press Start 2P'"; ctx.textAlign = "center";
+    ctx.fillText("GAME OVER", W/2, H/2 - 30);
+    ctx.fillStyle = "#ffffff"; ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText(`FINAL SCORE: ${gs.score || 0}`, W/2, H/2 + 20);
+    ctx.textAlign = "left";
+  }
+  if (gs.state === STATE.WIN) {
+    ctx.fillStyle = "rgba(0,0,40,0.8)"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ffdd44"; ctx.font = "24px 'Press Start 2P'"; ctx.textAlign = "center";
+    ctx.fillText("CONGRATULATIONS!", W/2, H/2 - 40);
+    ctx.fillStyle = "#44ddff"; ctx.font = "14px 'Press Start 2P'";
+    ctx.fillText("YOU CONQUERED THE OCEAN!", W/2, H/2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(`FINAL SCORE: ${gs.score || 0}`, W/2, H/2 + 40);
+    ctx.textAlign = "left";
+  }
+}
+
+// ---- Title screen for lobby states ----
+function renderLobbyBackground() {
+  drawBackground(localFrame);
+  drawCrab(W/2 - 16, H/2 + 60, Math.floor(localFrame * 0.15), 0);
+  drawShark(100 + Math.sin(localFrame * 0.02) * 80, 200, Math.floor(localFrame * 0.1));
+  drawCookieCrumb(W/2 + 80, H/2 + 60, localFrame);
+  drawCoral(50, H - 80, 0);
+  drawSeaweed(550, H - 80, localFrame, 0);
+  drawStingray(400 + Math.cos(localFrame * 0.015) * 60, 150 + Math.sin(localFrame * 0.02) * 30, Math.floor(localFrame * 0.1));
+  drawPorcupinefish(300, 300, Math.floor(localFrame * 0.1), localFrame % 120 < 60);
+  drawSeaUrchin(80, H - 80, Math.floor(localFrame * 0.1));
+  drawPenguin(480 + Math.sin(localFrame * 0.025) * 40, 280 + Math.cos(localFrame * 0.03) * 20, Math.floor(localFrame * 0.15));
+}
+
+// ---- Main render loop ----
+function gameLoop(timestamp) {
+  localFrame++;
+
+  if (viewState === VIEW.PLAYING) {
+    // Send input every frame
+    sendInput();
+    // Render from server state
+    renderGame();
+  } else {
+    // Lobby/menu - render background behind overlay
+    renderLobbyBackground();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+// ---- Kick off ----
+updateLobbyOverlay();
+connect();
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
