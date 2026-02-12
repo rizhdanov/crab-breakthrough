@@ -718,7 +718,15 @@ function handleServerMessage(msg) {
         const serverMe = gameState.players.find(p => p.idx === myPlayerIdx);
         if (serverMe) {
           const drift = Math.hypot(predictedX - serverMe.x, predictedY - serverMe.y);
-          if (drift > 8) { predictedX = serverMe.x; predictedY = serverMe.y; }
+          if (drift > 48) {
+            // Large drift (hit, teleport, level change) - hard snap
+            predictedX = serverMe.x; predictedY = serverMe.y;
+          } else if (drift > 1) {
+            // Normal drift from network lag - smooth blend toward server
+            const blend = 0.1;
+            predictedX += (serverMe.x - predictedX) * blend;
+            predictedY += (serverMe.y - predictedY) * blend;
+          }
         }
       } else {
         // Reset prediction on new state if not active
