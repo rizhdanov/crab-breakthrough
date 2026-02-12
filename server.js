@@ -12,7 +12,7 @@ const { GameRoom, STATE } = require("./game-engine");
 
 const PORT = process.env.PORT || 3000;
 const TICK_RATE = 60;
-const BROADCAST_EVERY = 3; // broadcast state every N ticks (~20/sec)
+const BROADCAST_EVERY = 1; // broadcast state every tick (~60/sec)
 const ROOM_TIMEOUT = 120_000; // 2 min idle before room cleanup
 
 const app = express();
