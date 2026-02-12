@@ -705,34 +705,12 @@ function handleServerMessage(msg) {
       stateRecvTime = performance.now();
       viewState = VIEW.PLAYING;
       overlay.classList.add("hidden");
-      // Reset prediction
-      predictedX = null; predictedY = null; predictionActive = false;
       break;
 
     case "state":
       prevGameState = gameState;
       gameState = msg;
       stateRecvTime = performance.now();
-      // Reconcile prediction with server authority
-      if (predictionActive && gameState.players) {
-        const serverMe = gameState.players.find(p => p.idx === myPlayerIdx);
-        if (serverMe) {
-          const drift = Math.hypot(predictedX - serverMe.x, predictedY - serverMe.y);
-          if (drift > 48) {
-            // Large drift (hit, teleport, level change) - hard snap
-            predictedX = serverMe.x; predictedY = serverMe.y;
-          } else if (drift > 1) {
-            // Normal drift from network lag - smooth blend toward server
-            const blend = 0.1;
-            predictedX += (serverMe.x - predictedX) * blend;
-            predictedY += (serverMe.y - predictedY) * blend;
-          }
-        }
-      } else {
-        // Reset prediction on new state if not active
-        const me = gameState.players && gameState.players.find(p => p.idx === myPlayerIdx);
-        if (me) { predictedX = me.x; predictedY = me.y; }
-      }
       // Play sound events
       if (msg.events) {
         for (const ev of msg.events) {
@@ -806,95 +784,6 @@ function sendInput() {
     lastSentInput = key;
     sendMsg(input);
   }
-}
-
-// ---- Client-side movement prediction ----
-// Replicates player movement logic from game-engine.js for instant response
-const PRED_SPEED = 3.36;
-const PRED_MARGIN = 4;
-let predictedX = null;
-let predictedY = null;
-let predictionActive = false;
-
-function isSolidClient(grid, col, row) {
-  if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return true;
-  return grid && grid[row] && grid[row][col] === 1;
-}
-
-function predictLocalPlayer() {
-  if (!gameState || !gameState.players || myPlayerIdx < 0) { predictionActive = false; return; }
-  const me = gameState.players.find(p => p.idx === myPlayerIdx);
-  if (!me || !me.active || me.bubbled) { predictionActive = false; return; }
-  if (gameState.state !== STATE.PLAYING || gameState.paused) { predictionActive = false; return; }
-
-  // Initialize from server state if needed
-  if (predictedX === null) { predictedX = me.x; predictedY = me.y; }
-
-  const input = {
-    up: !!keys["ArrowUp"] || !!keys["KeyW"] || !!keys["KeyI"] || !!keys["Numpad8"],
-    down: !!keys["ArrowDown"] || !!keys["KeyS"] || !!keys["KeyK"] || !!keys["Numpad5"],
-    left: !!keys["ArrowLeft"] || !!keys["KeyA"] || !!keys["KeyJ"] || !!keys["Numpad4"],
-    right: !!keys["ArrowRight"] || !!keys["KeyD"] || !!keys["KeyL"] || !!keys["Numpad6"],
-  };
-
-  let dx = 0, dy = 0;
-  if (input.left)  dx = -PRED_SPEED;
-  if (input.right) dx = PRED_SPEED;
-  if (input.up)    dy = -PRED_SPEED;
-  if (input.down)  dy = PRED_SPEED;
-  if (dx && dy) { dx *= 0.707; dy *= 0.707; }
-
-  // Grid collision - X axis
-  const m = PRED_MARGIN;
-  if (dx !== 0) {
-    const nx = predictedX + dx;
-    const left = Math.floor((nx + m) / TILE);
-    const right = Math.floor((nx + TILE - 1 - m) / TILE);
-    const top = Math.floor((predictedY + m) / TILE);
-    const bot = Math.floor((predictedY + TILE - 1 - m) / TILE);
-    let blocked = false;
-    for (let r = top; r <= bot; r++)
-      for (let c = left; c <= right; c++)
-        if (isSolidClient(gameState.grid, c, r)) blocked = true;
-    if (!blocked) predictedX = nx;
-  }
-
-  // Grid collision - Y axis
-  if (dy !== 0) {
-    const ny = predictedY + dy;
-    const left = Math.floor((predictedX + m) / TILE);
-    const right = Math.floor((predictedX + TILE - 1 - m) / TILE);
-    const top = Math.floor((ny + m) / TILE);
-    const bot = Math.floor((ny + TILE - 1 - m) / TILE);
-    let blocked = false;
-    for (let r = top; r <= bot; r++)
-      for (let c = left; c <= right; c++)
-        if (isSolidClient(gameState.grid, c, r)) blocked = true;
-    if (!blocked) predictedY = ny;
-  }
-
-  // Clamp to bounds
-  predictedX = Math.max(0, Math.min(W - TILE, predictedX));
-  predictedY = Math.max(0, Math.min(H - TILE, predictedY));
-
-  // Seaweed bounce
-  const pcol = Math.floor((predictedX + TILE / 2) / TILE);
-  const prow = Math.floor((predictedY + TILE / 2) / TILE);
-  if (pcol >= 0 && pcol < COLS && prow >= 0 && prow < ROWS &&
-      gameState.grid && gameState.grid[prow] && gameState.grid[prow][pcol] === 2) {
-    const swCx = pcol * TILE + TILE / 2;
-    const swCy = prow * TILE + TILE / 2;
-    let bx = (predictedX + TILE / 2) - swCx;
-    let by = (predictedY + TILE / 2) - swCy;
-    const len = Math.hypot(bx, by) || 1;
-    bx /= len; by /= len;
-    predictedX += bx * 3.5;
-    predictedY += by * 3.5;
-    predictedX = Math.max(0, Math.min(W - TILE, predictedX));
-    predictedY = Math.max(0, Math.min(H - TILE, predictedY));
-  }
-
-  predictionActive = true;
 }
 
 // ---- Lobby UI ----
@@ -1038,17 +927,7 @@ function getInterpolatedState() {
     return { ...e, x: lerp(prev.x, e.x, t), y: lerp(prev.y, e.y, t) };
   });
 
-  const result = { ...gameState, players: interpPlayers, enemies: interpEnemies };
-
-  // Override local player with predicted position for instant feedback
-  if (predictionActive && predictedX !== null) {
-    const myIdx = result.players.findIndex(p => p.idx === myPlayerIdx);
-    if (myIdx >= 0) {
-      result.players[myIdx] = { ...result.players[myIdx], x: predictedX, y: predictedY };
-    }
-  }
-
-  return result;
+  return { ...gameState, players: interpPlayers, enemies: interpEnemies };
 }
 
 // ---- Game rendering (from server state) ----
@@ -1332,8 +1211,6 @@ function gameLoop(timestamp) {
   if (viewState === VIEW.PLAYING) {
     // Send input every frame
     sendInput();
-    // Run local movement prediction for instant feedback
-    predictLocalPlayer();
     // Render from server state
     renderGame();
   } else {
