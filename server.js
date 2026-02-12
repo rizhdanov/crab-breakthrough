@@ -214,6 +214,16 @@ wss.on("connection", (ws) => {
         break;
       }
 
+      case "pause": {
+        const room = rooms.get(info.roomCode);
+        if (!room) break;
+        room.togglePause(clientId);
+        // Immediately broadcast so pause is responsive
+        const pauseState = room.getState();
+        broadcastToRoom(info.roomCode, { type: "state", ...pauseState });
+        break;
+      }
+
       case "leave": {
         leaveRoom(ws);
         break;

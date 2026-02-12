@@ -346,6 +346,8 @@ class GameRoom {
     this.players = [];
     this.babyCrab = null;
     this.events = [];       // sound events for clients
+    this.paused = false;
+    this.pausedBy = -1;     // playerIdx who paused
     this.gameInterval = null;
     this.playerSlots = [null, null, null, null]; // idx -> playerId
     this.playerNames = ["", "", "", ""];
@@ -412,6 +414,13 @@ class GameRoom {
     const p = this.players.find(pl => pl.idx === idx);
     if (p) p.input = input;
     this.lastActivity = Date.now();
+  }
+
+  togglePause(playerId) {
+    if (this.state !== STATE.PLAYING && !this.paused) return;
+    this.paused = !this.paused;
+    this.pausedBy = this.paused ? this.getPlayerIdx(playerId) : -1;
+    this.events.push({ type: this.paused ? "pause" : "unpause" });
   }
 
   toggleBubble(playerId) {
@@ -537,8 +546,9 @@ class GameRoom {
 
   // ---- One game tick ----
   tick() {
-    this.frame++;
     this.events = [];
+    if (this.paused) return;
+    this.frame++;
 
     switch (this.state) {
       case STATE.PLAYING:
@@ -822,6 +832,8 @@ class GameRoom {
       grid: this.grid,
       babyCrab: this.babyCrab,
       events: this.events,
+      paused: this.paused,
+      pausedBy: this.pausedBy,
     };
   }
 

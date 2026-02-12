@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Crab Breakthrough</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
@@ -98,6 +98,117 @@
     color: #ff4444;
     font-size: 11px;
   }
+
+  /* ---- Touch controls ---- */
+  #touch-controls {
+    display: none;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 180px;
+    z-index: 20;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  #dpad-zone {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    width: 160px;
+    height: 160px;
+    pointer-events: auto;
+    touch-action: none;
+  }
+
+  .dpad-bg {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dpad-arrow {
+    width: 52px;
+    height: 52px;
+    background: rgba(255,255,255,0.10);
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.5);
+    font-size: 22px;
+    pointer-events: none;
+  }
+  .dpad-arrow.pressed {
+    background: rgba(255,255,255,0.35);
+    border-color: rgba(255,255,255,0.5);
+    color: #fff;
+  }
+
+  .dpad-row {
+    display: flex;
+    gap: 0;
+  }
+  .dpad-center {
+    width: 52px;
+    height: 52px;
+  }
+
+  #touch-action-btns {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: auto;
+    touch-action: none;
+  }
+
+  .touch-btn {
+    width: 58px;
+    height: 58px;
+    background: rgba(255,255,255,0.10);
+    border: 2px solid rgba(255,255,255,0.20);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.5);
+    font-family: 'Press Start 2P', monospace;
+    font-size: 8px;
+    pointer-events: auto;
+    touch-action: none;
+  }
+  .touch-btn.pressed, .touch-btn:active {
+    background: rgba(255,255,255,0.35);
+    border-color: rgba(255,255,255,0.5);
+    color: #fff;
+  }
+
+  /* ---- Mobile responsive ---- */
+  @media (max-width: 700px) {
+    body { align-items: flex-start; }
+    #game-wrapper { width: 100vw; }
+    #game-canvas {
+      width: 100vw;
+      height: calc(100vw * 480 / 640);
+    }
+    #hud {
+      width: 100vw;
+      font-size: 8px;
+      padding: 4px 2px;
+    }
+    #overlay h1 { font-size: 18px; margin-bottom: 10px; }
+    #overlay h2 { font-size: 11px; margin-bottom: 10px; }
+    #overlay p { font-size: 8px; line-height: 1.8; }
+    #overlay .blink { font-size: 10px; }
+  }
 </style>
 </head>
 <body>
@@ -109,6 +220,23 @@
     <span id="lives-display"></span>
   </div>
   <canvas id="game-canvas" width="640" height="480"></canvas>
+  <div id="touch-controls">
+    <div id="dpad-zone">
+      <div class="dpad-bg">
+        <div class="dpad-arrow dpad-up">&#9650;</div>
+        <div class="dpad-row">
+          <div class="dpad-arrow dpad-left">&#9664;</div>
+          <div class="dpad-center"></div>
+          <div class="dpad-arrow dpad-right">&#9654;</div>
+        </div>
+        <div class="dpad-arrow dpad-down">&#9660;</div>
+      </div>
+    </div>
+    <div id="touch-action-btns">
+      <div id="touch-pause" class="touch-btn">PAUSE</div>
+      <div id="touch-bubble" class="touch-btn">SHIELD</div>
+    </div>
+  </div>
   <div id="overlay">
     <h1>CRAB BREAKTHROUGH</h1>
     <h2>~ An Ocean Adventure ~</h2>
@@ -1757,6 +1885,120 @@ function renderHighScores() {
     ctx.fillText("PRESS ENTER / ESC TO GO BACK", W/2, H - 40);
   }
   ctx.textAlign = "left";
+}
+
+// ============================================================
+//  TOUCH CONTROLS (mobile/tablet)
+// ============================================================
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+if (isTouchDevice) {
+  document.getElementById('touch-controls').style.display = 'block';
+
+  const dpadZone = document.getElementById('dpad-zone');
+  const dpadUp = document.querySelector('.dpad-up');
+  const dpadDown = document.querySelector('.dpad-down');
+  const dpadLeft = document.querySelector('.dpad-left');
+  const dpadRight = document.querySelector('.dpad-right');
+  let dpadTouchId = null;
+
+  function updateDpadFromTouch(touch) {
+    const rect = dpadZone.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = touch.clientX - cx;
+    const dy = touch.clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    const deadzone = 12;
+
+    dpadUp.classList.remove('pressed');
+    dpadDown.classList.remove('pressed');
+    dpadLeft.classList.remove('pressed');
+    dpadRight.classList.remove('pressed');
+    keys["ArrowUp"] = keys["ArrowDown"] = keys["ArrowLeft"] = keys["ArrowRight"] = false;
+
+    if (dist > deadzone) {
+      const angle = Math.atan2(dy, dx);
+      if (angle < -Math.PI / 8 && angle > -7 * Math.PI / 8) {
+        keys["ArrowUp"] = true; dpadUp.classList.add('pressed');
+      }
+      if (angle > Math.PI / 8 && angle < 7 * Math.PI / 8) {
+        keys["ArrowDown"] = true; dpadDown.classList.add('pressed');
+      }
+      if (Math.abs(angle) > 3 * Math.PI / 8) {
+        keys["ArrowLeft"] = true; dpadLeft.classList.add('pressed');
+      }
+      if (Math.abs(angle) < 5 * Math.PI / 8) {
+        keys["ArrowRight"] = true; dpadRight.classList.add('pressed');
+      }
+    }
+  }
+
+  function clearDpad() {
+    keys["ArrowUp"] = keys["ArrowDown"] = keys["ArrowLeft"] = keys["ArrowRight"] = false;
+    dpadUp.classList.remove('pressed');
+    dpadDown.classList.remove('pressed');
+    dpadLeft.classList.remove('pressed');
+    dpadRight.classList.remove('pressed');
+  }
+
+  dpadZone.addEventListener('touchstart', e => {
+    e.preventDefault();
+    ensureAudio();
+    // If on title screen, start the game on any touch
+    if (state === STATE.TITLE) { startGame(); return; }
+    const touch = e.changedTouches[0];
+    dpadTouchId = touch.identifier;
+    updateDpadFromTouch(touch);
+  }, { passive: false });
+
+  dpadZone.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const touch of e.changedTouches) {
+      if (touch.identifier === dpadTouchId) updateDpadFromTouch(touch);
+    }
+  }, { passive: false });
+
+  dpadZone.addEventListener('touchend', e => {
+    for (const touch of e.changedTouches) {
+      if (touch.identifier === dpadTouchId) { dpadTouchId = null; clearDpad(); }
+    }
+  }, { passive: false });
+
+  dpadZone.addEventListener('touchcancel', e => {
+    dpadTouchId = null; clearDpad();
+  }, { passive: false });
+
+  // Pause button
+  document.getElementById('touch-pause').addEventListener('touchstart', e => {
+    e.preventDefault();
+    ensureAudio();
+    if (state === STATE.PLAYING) {
+      pausedFrom = state;
+      state = STATE.PAUSED;
+    } else if (state === STATE.PAUSED) {
+      state = pausedFrom;
+    } else if (state === STATE.TITLE) {
+      startGame();
+    }
+  }, { passive: false });
+
+  // Bubble/Shield button (toggles P1 bubble)
+  document.getElementById('touch-bubble').addEventListener('touchstart', e => {
+    e.preventDefault();
+    ensureAudio();
+    if (state === STATE.PLAYING && players.length > 0 && players[0].active) {
+      players[0].bubbled = !players[0].bubbled;
+      if (players[0].bubbled) {
+        playTone(600, 0.06, "sine", 0.08);
+        setTimeout(() => playTone(800, 0.08, "sine", 0.06), 40);
+      } else {
+        playTone(400, 0.06, "sine", 0.06);
+      }
+    } else if (state === STATE.TITLE) {
+      startGame();
+    }
+  }, { passive: false });
 }
 
 // ---- Fixed-timestep main loop (60 ticks/sec, hardware-independent) ----
